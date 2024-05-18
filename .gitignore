@@ -1,0 +1,8 @@
+*.o
+sched
+core.dump.*
+.cproject
+.project
+.settings
+*.log
+test
