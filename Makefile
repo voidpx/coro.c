@@ -34,8 +34,14 @@ echoserver.o: examples/echoserver.c
 
 echoserver: echoserver.o coro.o colib.o list.o sched.o atomic.o
 	$(CC) -o $@ $^ -lc
+
+chatserver.o: examples/chatserver.c
+	$(CC) -c $(CFLAGS) -o chatserver.o $<
+	
+chatserver: chatserver.o coro.o colib.o list.o sched.o atomic.o
+	$(CC) -o $@ $^ -lc
 	
 .PHONY: clean
 
 clean:
-	rm -f *.o test echoserver
+	rm -f *.o test echoserver chatserver

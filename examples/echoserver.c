@@ -3,6 +3,7 @@
 #include <fcntl.h>
 
 #include "../src/coro.h"
+#define PORT 8888
 
 void *handle_connnect(void *a) {
 	int sfd  = (int)a;
@@ -18,12 +19,21 @@ void *handle_connnect(void *a) {
 	}
 }
 
+void *background_tick(void *a) {
+	int i = 0;
+	while (1) {
+		printf("background tick: %d\n", i++);
+		co_sleep(1);
+	}
+}
+
 void *start_server(void *arg) {
+	coro(background_tick, NULL, "background tick");
 	int so = co_socket(PF_INET, SOCK_STREAM, 0);
 	struct sockaddr_in addr;
 	addr.sin_family = AF_INET;
 	addr.sin_addr = (struct in_addr){htonl(INADDR_ANY)};
-	addr.sin_port = htons(8888);
+	addr.sin_port = htons(PORT);
 	err_guard(bind(so, (struct sockaddr*)&addr, sizeof(addr)), "error bind");
 	listen(so, 50);
 	struct sockaddr sa;
@@ -44,6 +54,4 @@ void *start_server(void *arg) {
 int main() {
 	coro_start(start_server, NULL);
 }
-
-
 
