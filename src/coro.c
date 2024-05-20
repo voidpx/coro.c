@@ -19,11 +19,6 @@
 #define TICK_INTERVAL 1000000
 #define STACK_SIZE 1 << 20 // 2M default stack size
 
-#define TF_REAPER 0x1
-#define is_reaper(t) (t->flags & TF_REAPER)
-#define is_dead(t) (t->state == DEAD)
-#define is_dying(t) (t->state == DYING)
-
 typedef struct _sigcontext {
 	unsigned long	  uc_flags;
 	struct _sigcontext  *uc_link;
@@ -57,7 +52,13 @@ static inline void add_new(task *t) {
 
 void task_exit(task *t) {
 	preempt_disable();
-	t->state = DYING;
+	if (is_detached(t)) {
+		// return value not important, dies immediately
+		t->state = DEAD;
+	} else {
+		// someone waiting for the return value
+		t->state = DYING;
+	}
 	task *temp;
 	nlist_for_each(temp, &t->waitq) {
 		temp->state = RUNNABLE;
@@ -134,7 +135,7 @@ static void tick(int sig, siginfo_t *si, void *uc) {
 
 }
 
-static task *new_task(void *(*f)(void *), void *arg, char *name, size_t stack_size) {
+static task *new_task(void *(*f)(void *), void *arg, char *name, size_t stack_size, int flags) {
 	task *t = (task*)calloc(1, sizeof(task));
 	t->stack = (unsigned long)malloc(stack_size); // 2M stack
 	if (!t->stack) {
@@ -145,6 +146,7 @@ static task *new_task(void *(*f)(void *), void *arg, char *name, size_t stack_si
 	t->arg = arg;
 	t->state = NEW;
 	t->waitq = NLIST_INIT();
+	t->flags = flags;
 	if (name) {
 		strncpy(&t->name, name, sizeof(t->name) - 1);
 	}
@@ -152,8 +154,9 @@ static task *new_task(void *(*f)(void *), void *arg, char *name, size_t stack_si
 	return t;
 }
 
-task *coro(void *(*f)(void *), void *a, char *name) {
-	return new_task(f, a, name, STACK_SIZE);
+task *coro(void *(*f)(void *), void *a, char *name, int flags) {
+	flags &= ~TF_REAPER; // reaper flag can't be changed
+	return new_task(f, a, name, STACK_SIZE, flags);
 }
 
 static inline task *_get_next(task *t) {
@@ -288,7 +291,7 @@ void _coro_start(void *(*main)(void*), void *arg, unsigned long ret_pc, unsigned
 	// XXX: dirty
 	sched->arg = (void*)main;
 	// return value of main is stored in sched, in stead of the main task
-	task *m = coro(main_wrapper, arg, "main");
+	task *m = coro(main_wrapper, arg, "main", 0);
 	m->flags |= TF_REAPER;
 	// never return here, this stack frame will get destroyed by the following call
 	schedule();

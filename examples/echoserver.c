@@ -28,7 +28,7 @@ void *background_tick(void *a) {
 }
 
 void *start_server(void *arg) {
-	coro(background_tick, NULL, "background tick");
+	coro(background_tick, NULL, "background tick", TF_DETACHED);
 	int so = co_socket(PF_INET, SOCK_STREAM, 0);
 	struct sockaddr_in addr;
 	addr.sin_family = AF_INET;
@@ -45,7 +45,7 @@ void *start_server(void *arg) {
 		char s[N];
 		snprintf(s, N, "connection accepted: %d\n", fd);
 		printf("%s", s);
-		coro(handle_connnect, (void*) fd, s);
+		coro(handle_connnect, (void*) fd, s, TF_DETACHED);
 
 	}
 	return NULL;

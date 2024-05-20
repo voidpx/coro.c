@@ -5,7 +5,7 @@ LD = ld
 
 .PHONY: all
 
-all: test echoserver
+all: test echoserver chatserver
 
 coro.o: src/coro.c src/coro.h
 	$(CC) -c $(CFLAGS) -o $@ $<

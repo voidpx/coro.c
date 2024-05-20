@@ -51,7 +51,7 @@ void schedule();
  * create a coroutine that will execute func with the argument arg, can only be called from within a coroutine,
  * i.e. not outside the runtime.
  */
-task *coro(void *(*func)(void *), void *arg, char* name);
+task *coro(void *(*func)(void *), void *arg, char* name, int flags);
 
 /*
  * main entry point for the coroutine runtime, it sets up the runtime and execute the main function
@@ -63,6 +63,13 @@ void *coro_start(void *(*main)(void*), void *arg);
  * wait for the given task to finish and return the result, can only be called from a coroutine.
  */
 void *wait_for(task *t);
+
+#define TF_REAPER 0x1
+#define TF_DETACHED 0x2
+#define is_reaper(t) ((t->flags & TF_REAPER) == TF_REAPER)
+#define is_dead(t) (t->state == DEAD)
+#define is_dying(t) (t->state == DYING)
+#define is_detached(t) ((t->flags & TF_DETACHED) == TF_DETACHED)
 
 #define err_exit(msg)    do { perror(msg); exit(EXIT_FAILURE); \
                                } while (0)

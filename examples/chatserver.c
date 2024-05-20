@@ -151,12 +151,12 @@ void *handle_connnect(void *a) {
 	char buf[BUFSZ];
 	while (1) {
 		int n = err_guard(co_read(sfd, buf, BUFSZ-1), "error read");
-		//err_guard(co_write(sfd, buf, n), "error write");
 		if (n > 0) {
 			handle_msg(buf, n, sfd);
-//			buf[n] = '\0';
-//			printf("connection %d recv: %s", sfd, buf);
+			continue;
 		}
+		// peer closed
+		break;
 	}
 }
 
@@ -179,7 +179,7 @@ void *start_server(void *arg) {
 		char s[N];
 		snprintf(s, N, "connection accepted: %d\n", fd);
 		printf("%s", s);
-		coro(handle_connnect, (void*) fd, s);
+		coro(handle_connnect, (void*) fd, s, TF_DETACHED);
 
 	}
 	return NULL;

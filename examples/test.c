@@ -33,9 +33,9 @@ void *start(void *arg) {
 	for (int i = 0; i < N; ++i) {
 		char n[10];
 		snprintf(&n, 10, "task%d", i);
-		a[i] = coro(func, i, &n);
+		a[i] = coro(func, i, &n, 0);
 	}
-	task *t = coro(sleep_5sec, NULL, "sleep 5 sec");
+	task *t = coro(sleep_5sec, NULL, "sleep 5 sec", 0);
 	for (int i = 0; i < N; ++i) {
 		void *r = wait_for(a[i]);
 		printf("%s return:%d\n", a[i]->name, (int)r);
