@@ -150,14 +150,13 @@ void *handle_connnect(void *a) {
 #define BUFSZ 1024
 	char buf[BUFSZ];
 	while (1) {
-		int n = err_guard(co_read(sfd, buf, BUFSZ-1), "error read");
-		if (n > 0) {
-			handle_msg(buf, n, sfd);
-			continue;
+		int n = co_read(sfd, buf, BUFSZ-1);
+		if (n <= 0) {
+			break;
 		}
-		// peer closed
-		break;
+		handle_msg(buf, n, sfd);
 	}
+	return NULL;
 }
 
 void *start_server(void *arg) {
@@ -171,14 +170,14 @@ void *start_server(void *arg) {
 	struct sockaddr sa;
 	socklen_t sl;
 	int fd;
-	printf("chat server started\n=======================\n");
+	co_printf("chat server started\n=======================\n");
 	init_htab();
 	while (1) {
 		fd = err_guard(co_accept(so, &sa, &sl), "error accept");
 #define N 32
 		char s[N];
-		snprintf(s, N, "connection accepted: %d\n", fd);
-		printf("%s", s);
+		co_snprintf(s, N, "connection accepted: %d\n", fd);
+		co_printf("%s", s);
 		coro(handle_connnect, (void*) fd, s, TF_DETACHED);
 
 	}

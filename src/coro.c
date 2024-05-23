@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stddef.h>
 #include <sys/epoll.h>
+#include <limits.h>
 
 #include "coro.h"
 #include "list.h"
@@ -16,8 +17,8 @@
 #define CLOCKID CLOCK_MONOTONIC
 #define SIG_SCHED SIGRTMIN
 
-#define TICK_INTERVAL 1000000
-#define STACK_SIZE 1 << 20 // 2M default stack size
+#define TICK_INTERVAL 10000
+#define STACK_SIZE 1 << 20 // 1M default stack size
 
 typedef struct _sigcontext {
 	unsigned long	  uc_flags;
@@ -32,10 +33,12 @@ list tasks = INIT_LIST(tasks);
 task *current;
 task *sched;
 static timer_t timerid;
-nlist_head ctimers;
-int epollfd;
+static nlist_head ctimers;
+static int __timeout = INT_MAX;
+static int epollfd;
 
-static int __scheduling = 0;
+int __scheduling = 0;
+int __preempt = 0;
 static int __tick_enabled = 0;
 
 void _switch_to(task *t);
@@ -76,7 +79,8 @@ void task_cleanup(task *t) {
 
 }
 
-void __sched_exit() {
+
+void __sched_cleanup() {
 	free(sched);
 }
 
@@ -97,13 +101,12 @@ static void tick_enable() {
 }
 
 void sched_exit() {
-	tick_enable();
 	__tick_enabled = 1;
-	__scheduling = 0;
+	tick_enable();
 }
 
 void sched_enter() {
-	__scheduling = 1;
+//	__scheduling = 1;
 	if (__tick_enabled) {
 		struct itimerspec its;
 		its.it_value.tv_sec = 0;
@@ -111,17 +114,18 @@ void sched_enter() {
 		its.it_interval.tv_sec = 0;
 		its.it_interval.tv_nsec = 0;
 		if (timer_settime(timerid, 0, &its, NULL) == -1)
-			err_exit("timer_settime: error shutting down");
+			err_exit("timer_settime");
 	}
 }
 
 static void tick(int sig, siginfo_t *si, void *uc) {
+	if (__scheduling) {
+		return;
+	}
+	// not in scheduler
 	if (preempt_disabled()) {
 		async_preempt();
 		tick_enable();
-		return;
-	}
-	if (__scheduling) {
 		return;
 	}
 	__tick_enabled = 0;
@@ -132,12 +136,14 @@ static void tick(int sig, siginfo_t *si, void *uc) {
 	ctx->uc_mcontext.rip = (unsigned long)schedule;
 	ctx->uc_mcontext.rsp = sp;
 
-
 }
 
 static task *new_task(void *(*f)(void *), void *arg, char *name, size_t stack_size, int flags) {
-	task *t = (task*)calloc(1, sizeof(task));
-	t->stack = (unsigned long)malloc(stack_size); // 2M stack
+	task *t = (task*)co_calloc(1, sizeof(task));
+	if (!t) {
+		err_exit("unable to allocate coroutine, out of memory");
+	}
+	t->stack = (unsigned long)co_malloc(stack_size); // 2M stack
 	if (!t->stack) {
 		err_exit("unable to allocate stack, out of memory");
 	}
@@ -163,10 +169,45 @@ static inline task *_get_next(task *t) {
 	return t == sched || t->link.next == &tasks ? CONTAINER_OF(task, link, tasks.next) : CONTAINER_OF(task, link, t->link.next);
 }
 
-static void handle_epoll() {
+
+void __sched_timer(struct timespec *to) {
+	ctimer ct;
+	err_guard(clock_gettime(CLOCK_MONOTONIC, &ct.expire), "clock_gettime");
+	ct.expire.tv_sec += to->tv_sec;
+	ct.expire.tv_nsec += to->tv_nsec;
+	ct.task = current;
+	nlist_node __n = { NULL, NULL, NULL };
+	__n.n = &ct;
+	int to_milli = to->tv_sec * 1000 + to->tv_nsec / 1000000;
+	preempt_disable();
+	nlist_push(&__n, &ctimers);
+	if (to_milli < __timeout) {
+		__timeout = to_milli;
+	}
+	current->state = BLOCKED;
+	preempt_enable();
+	schedule();
+}
+
+void __sched_epoll(int fd, struct epoll_event *ev) {
+	preempt_disable();
+	err_guard(epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, ev),
+			"error epoll_ctl");
+	current->state = BLOCKED;
+	preempt_enable();
+	schedule();
+}
+
+static void handle_epoll(int timeout) {
 #define MAX_EVENTS 10
 	struct epoll_event events[MAX_EVENTS];
-	int nfds = err_guard(epoll_wait(epollfd, events, MAX_EVENTS, 0), "error epoll_eait");
+	int nfds = epoll_wait(epollfd, events, MAX_EVENTS, timeout);
+	if (nfds == -1) {
+		if (errno == EINTR) {
+			return;
+		}
+		err_exit("error epoll_wait");
+	}
 	for (int n = 0; n < nfds; ++n) {
 		epoll_t *t = (epoll_t *)events[n].data.ptr;
 		t->task->state = RUNNABLE;
@@ -175,6 +216,10 @@ static void handle_epoll() {
 }
 
 static void handle_timers() {
+	if (nlist_empty(&ctimers)) {
+		__timeout = INT_MAX;
+		return;
+	}
 	struct timespec ts;
 	if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
 		err_exit("handler_timer");
@@ -185,6 +230,11 @@ static void handle_timers() {
 				|| (ts.tv_sec == t->expire.tv_sec && ts.tv_nsec >= t->expire.tv_nsec)) {
 			t->task->state = RUNNABLE;
 			nlist_remove(n, &ctimers);
+		} else {
+			int to = (t->expire.tv_sec - ts.tv_sec) * 1000 + (t->expire.tv_nsec - ts.tv_nsec) / 1000000;
+			if (to < __timeout) {
+				__timeout = to;
+			}
 		}
 	}
 
@@ -194,8 +244,8 @@ static task *_pick_next() {
 	if (list_empty(&tasks)) {
 		goto done; // done, scheduler exit
 	}
+	handle_epoll(0);
 	while (1) {
-		handle_epoll();
 		handle_timers();
 		task *t = _get_next(current);
 		task *p = t;
@@ -214,13 +264,13 @@ static task *_pick_next() {
 		}
 		if (!is_reaper(t) && is_dead(t)) {
 			task_cleanup(t);
+			continue; // try next
 		} else if (is_reaper(t) && is_dying(t)) {
 			// sched reaps the reaper
 			task_cleanup(t);
 			break;
 		}
-		tick_enable();
-		pause();
+		handle_epoll(__timeout);
 	}
 done:
 	return sched;
@@ -272,6 +322,10 @@ void _coro_start(void *(*main)(void*), void *arg, unsigned long ret_pc, unsigned
 	struct sigevent sev;
 	struct sigaction sa;
 	sched = (task *)calloc(1, sizeof(task));
+	if (!sched) {
+		err_exit("unable to allocate scheduler, out of memory");
+	}
+	strncpy(sched->name, "sched", 5);
 	sched->state = RUNNABLE;
 	current = sched;
 	sa.sa_flags = SA_SIGINFO;
@@ -295,4 +349,54 @@ void _coro_start(void *(*main)(void*), void *arg, unsigned long ret_pc, unsigned
 	m->flags |= TF_REAPER;
 	// never return here, this stack frame will get destroyed by the following call
 	schedule();
+}
+
+//=====================
+
+void debug_dump(task *t, char *msg) {
+	printf("=========task dump: %s\n", msg);
+	printf("task: %s: %p\n", t->name, t);
+	printf("sp: %#lx\n", t->sp);
+	printf("pc: %#lx\n", t->pc);
+	printf("registers:\n");
+	printf("eflags: %ld\n");
+	printf("rcx: %#lx\n", *(unsigned long *)t->sp);
+	printf("rax: %#lx\n", *(unsigned long *)(t->sp + 8));
+	printf("rdx: %#lx\n", *(unsigned long *)(t->sp + 0x10));
+	printf("rbx: %#lx\n", *(unsigned long *)(t->sp + 0x18));
+	printf("rbp: %#lx\n", *(unsigned long *)(t->sp + 0x20));
+	printf("rsi: %#lx\n", *(unsigned long *)(t->sp + 0x28));
+	printf("rdi: %#lx\n", *(unsigned long *)(t->sp + 0x30));
+	printf("r15: %#lx\n", *(unsigned long *)(t->sp + 0x38));
+	printf("r14: %#lx\n", *(unsigned long *)(t->sp + 0x40));
+	printf("r13: %#lx\n", *(unsigned long *)(t->sp + 0x48));
+	printf("r12: %#lx\n", *(unsigned long *)(t->sp + 0x50));
+	printf("r11: %#lx\n", *(unsigned long *)(t->sp + 0x58));
+	printf("r10: %#lx\n", *(unsigned long *)(t->sp + 0x60));
+	printf("r9: %#lx\n", *(unsigned long *)(t->sp + 0x68));
+	printf("r8: %#lx\n", *(unsigned long *)(t->sp + 0x70));
+	printf("rbp: %#lx\n", *(unsigned long *)(t->sp + 0x78));
+
+	printf("=========task dump end==============\n");
+
+}
+
+void debug_dump_sched_out(task *t) {
+	if (strncmp(t->name, "main", 4)
+			&& strncmp(t->name, "sleep5sec", 9)) {
+		return;
+	}
+
+	debug_dump(t, "sched out");
+}
+
+void debug_dump_sched_in(task *t) {
+	if (strncmp(t->name, "main", 4)
+				&& strncmp(t->name, "sleep5sec", 9)) {
+			return;
+		}
+	debug_dump(t, "sched in");
+	if (t->sp - t->stack == 0xFD788) {
+		printf("stack crashed\n");
+	}
 }

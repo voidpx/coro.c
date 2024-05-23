@@ -11,19 +11,22 @@ void *handle_connnect(void *a) {
 	char buf[BUFSZ];
 	while (1) {
 		int n = err_guard(co_read(sfd, buf, BUFSZ-1), "error read");
-		err_guard(co_write(sfd, buf, n), "error write");
-		if (n > 0) {
-			buf[n] = '\0';
-			printf("connection %d recv: %s", sfd, buf);
+		if (n <= 0) {
+			break;
 		}
+		err_guard(co_write(sfd, buf, n), "error write");
+		buf[n] = '\0';
+		co_printf("connection %d recv: %s", sfd, buf);
+
 	}
 }
 
 void *background_tick(void *a) {
 	int i = 0;
+	struct timespec ts = {1, 0};
 	while (1) {
-		printf("background tick: %d\n", i++);
-		co_sleep(1);
+		co_printf("background tick: %d\n", i++);
+		co_sleep(&ts);
 	}
 }
 
@@ -43,8 +46,8 @@ void *start_server(void *arg) {
 		fd = err_guard(co_accept(so, &sa, &sl), "error accept");
 #define N 32
 		char s[N];
-		snprintf(s, N, "connection accepted: %d\n", fd);
-		printf("%s", s);
+		co_snprintf(s, N, "connection accepted: %d\n", fd);
+		co_printf("%s", s);
 		coro(handle_connnect, (void*) fd, s, TF_DETACHED);
 
 	}
