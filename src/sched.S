@@ -4,7 +4,7 @@
 .global _task_cleanup
 .text
 
-# prepare for calling into c, mainly make sure stack is properly aligned
+# prepare for calling into c, make sure stack is properly aligned
 __call_c:
 	pushq %rax;
 	pushq %rcx;
@@ -41,105 +41,6 @@ __sched_exit:
 	call __call_c;
 	popq %r11;
 	retq;
-
-#__save_context:
-#	pushq %r8;
-#	pushq %r9;
-#	pushq %r10;
-#	pushq %r11;
-#	pushq %r12;
-#	pushq %r13;
-#	pushq %r14;
-#	pushq %r15;
-#	pushq %rdi;
-#	pushq %rsi;
-#	pushq %rbp;
-#	pushq %rbx;
-#	pushq %rdx;
-#	pushq %rax;
-#	pushq %rcx;
-#	pushfq;
-#	subq $0x200, %rsp;
-#	fxsave (%rsp);
-#	pushq %rdi;
-#	movq current(%rip), %rdi;
-#	movq %r8, 0xa0(%rdi);
-#	movq %r9, 0xa8(%rdi);
-#	movq %r10, 0xb0(%rdi);
-#	movq %r11, 0xb8(%rdi);
-#	movq %r12, 0xc0(%rdi);
-#	movq %r13, 0xc8(%rdi);
-#	movq %r14, 0xd0(%rdi);
-#	movq %r15, 0xd8(%rdi);
-#	#movq %rdi, 0xe0(%rdi);
-#	movq %rsi, 0xe8(%rdi);
-#	movq %rbp, 0xf0(%rdi);
-#	movq %rbx, 0xf8(%rdi);
-#	movq %rdx, 0x100(%rdi);
-#	movq %rax, 0x108(%rdi);
-#	movq %rcx, 0x110(%rdi);
-#	pushfq;
-#	movq (%rsp), %rdx;
-#	movq %rdx, 0x118(%rdi)
-#	popfq;
-#
-#	fxsave 0x120(%rdi);
-#	popq %rax; #original rdi
-#	movq %rax, 0xe0(%rdi); #finally
-#	pushq 0x108(%rdi)
-#	movq %rax, %rdi; #restore
-#	popq %rax;
-#
-#	retq;
-
-#__restore_context:
-#	popfq;
-#	popq %rcx;
-#	popq %rax;
-#	popq %rdx;
-#	popq %rbx;
-#	popq %rbp;
-#	popq %rsi;
-#	popq %rdi;
-#	popq %r15;
-#	popq %r14;
-#	popq %r13;
-#	popq %r12;
-#	popq %r11;
-#	popq %r10;
-#	popq %r9;
-#	popq %r8;
-#	movq %rbp, %rsp;
-#	popq %rbp;
-
-#	movq current(%rip), %rdi;
-#	fxrstor 0x120(%rdi);
-#	movq   0xa0(%rdi), %r8;
-#	movq   0xa8(%rdi), %r9;
-#	movq   0xb0(%rdi), %r10;
-#	movq   0xb8(%rdi), %r11;
-#	movq   0xc0(%rdi), %r12;
-#	movq   0xc8(%rdi), %r13;
-#	movq   0xd0(%rdi), %r14;
-#	movq   0xd8(%rdi), %r15;
-#	#movq   0xe0(%rdi), %rdi;
-#	movq   0xe8(%rdi), %rsi;
-#	movq   0xf0(%rdi), %rbp;
-#	movq   0xf8(%rdi), %rbx;
-#	movq  0x100(%rdi), %rdx;
-#	movq  0x108(%rdi), %rax;
-#	movq  0x110(%rdi), %rcx;
-#	pushq %rax;
-#	subq $8, %rsp;
-#	movq  0x118(%rdi), %rax;
-#	movq %rax, (%rsp);
-#	popfq;
-#	popq %rax;
-#
-#	# finally
-#	movq   0xe0(%rdi), %rdi;
-#
-#	retq;
 
 # main scheduler entry:
 # 1. called from the timer signal handler,in which case the stack is not necessarily aligned properly for calls
@@ -192,9 +93,7 @@ schedule:
 
 	movq current(%rip), %rdi;
 	movq %rsp, (%rdi);
-	#movq (%rsp), %r10; # return address of call schedule
-	#movq %r10, 8(%rdi); # resume pc
-
+	#only the sp needs to be saved, pc is saved on the stack already
 
 3:
 #===========debug================

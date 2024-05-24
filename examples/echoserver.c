@@ -19,6 +19,7 @@ void *handle_connnect(void *a) {
 		co_printf("connection %d recv: %s", sfd, buf);
 
 	}
+	return NULL;
 }
 
 void *background_tick(void *a) {

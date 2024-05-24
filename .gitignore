@@ -1,8 +1,5 @@
-*.o
-sched
-core.dump.*
+build
 .cproject
 .project
 .settings
 *.log
-test

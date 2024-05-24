@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <sys/epoll.h>
 #include <limits.h>
+#include <sys/mman.h>
 
 #include "coro.h"
 #include "list.h"
@@ -17,7 +18,7 @@
 #define CLOCKID CLOCK_MONOTONIC
 #define SIG_SCHED SIGRTMIN
 
-#define TICK_INTERVAL 10000
+#define TICK_INTERVAL 1000000
 #define STACK_SIZE 1 << 20 // 1M default stack size
 
 typedef struct _sigcontext {
@@ -42,6 +43,18 @@ int __preempt = 0;
 static int __tick_enabled = 0;
 
 void _switch_to(task *t);
+
+static void *alloc_stack(size_t size) {
+	void *p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+	if (p == MAP_FAILED) {
+		err_exit("error alloc_stack");
+	}
+	return p;
+}
+
+static void free_stack(void *p, size_t size) {
+	err_guard(munmap(p, size), "error free_stack");
+}
 
 static inline void remove_task(task *t) {
 	list_remove(&t->link);
@@ -74,7 +87,7 @@ void task_exit(task *t) {
 // on scheduler stack
 void task_cleanup(task *t) {
 	remove_task(t);
-	free((void *)t->stack);
+	free_stack((void *)t->stack, STACK_SIZE); // configurable size?
 	free(t);
 
 }
@@ -124,6 +137,7 @@ static void tick(int sig, siginfo_t *si, void *uc) {
 	}
 	// not in scheduler
 	if (preempt_disabled()) {
+		// in non-preemptable user code
 		async_preempt();
 		tick_enable();
 		return;
@@ -135,6 +149,7 @@ static void tick(int sig, siginfo_t *si, void *uc) {
 	*(unsigned long *)sp = ctx->uc_mcontext.rip;
 	ctx->uc_mcontext.rip = (unsigned long)schedule;
 	ctx->uc_mcontext.rsp = sp;
+	current->pc = ctx->uc_mcontext.rip; // no real use for now, could be used for debugging
 
 }
 
@@ -143,7 +158,7 @@ static task *new_task(void *(*f)(void *), void *arg, char *name, size_t stack_si
 	if (!t) {
 		err_exit("unable to allocate coroutine, out of memory");
 	}
-	t->stack = (unsigned long)co_malloc(stack_size); // 2M stack
+	t->stack = (unsigned long)alloc_stack(stack_size);
 	if (!t->stack) {
 		err_exit("unable to allocate stack, out of memory");
 	}
@@ -342,7 +357,7 @@ void _coro_start(void *(*main)(void*), void *arg, unsigned long ret_pc, unsigned
 	setup_epoll();
 	sched->pc = ret_pc;
 	sched->sp = ret_sp;
-	// XXX: dirty
+	// user main as arg to sched
 	sched->arg = (void*)main;
 	// return value of main is stored in sched, in stead of the main task
 	task *m = coro(main_wrapper, arg, "main", 0);
@@ -351,52 +366,3 @@ void _coro_start(void *(*main)(void*), void *arg, unsigned long ret_pc, unsigned
 	schedule();
 }
 
-//=====================
-
-void debug_dump(task *t, char *msg) {
-	printf("=========task dump: %s\n", msg);
-	printf("task: %s: %p\n", t->name, t);
-	printf("sp: %#lx\n", t->sp);
-	printf("pc: %#lx\n", t->pc);
-	printf("registers:\n");
-	printf("eflags: %ld\n");
-	printf("rcx: %#lx\n", *(unsigned long *)t->sp);
-	printf("rax: %#lx\n", *(unsigned long *)(t->sp + 8));
-	printf("rdx: %#lx\n", *(unsigned long *)(t->sp + 0x10));
-	printf("rbx: %#lx\n", *(unsigned long *)(t->sp + 0x18));
-	printf("rbp: %#lx\n", *(unsigned long *)(t->sp + 0x20));
-	printf("rsi: %#lx\n", *(unsigned long *)(t->sp + 0x28));
-	printf("rdi: %#lx\n", *(unsigned long *)(t->sp + 0x30));
-	printf("r15: %#lx\n", *(unsigned long *)(t->sp + 0x38));
-	printf("r14: %#lx\n", *(unsigned long *)(t->sp + 0x40));
-	printf("r13: %#lx\n", *(unsigned long *)(t->sp + 0x48));
-	printf("r12: %#lx\n", *(unsigned long *)(t->sp + 0x50));
-	printf("r11: %#lx\n", *(unsigned long *)(t->sp + 0x58));
-	printf("r10: %#lx\n", *(unsigned long *)(t->sp + 0x60));
-	printf("r9: %#lx\n", *(unsigned long *)(t->sp + 0x68));
-	printf("r8: %#lx\n", *(unsigned long *)(t->sp + 0x70));
-	printf("rbp: %#lx\n", *(unsigned long *)(t->sp + 0x78));
-
-	printf("=========task dump end==============\n");
-
-}
-
-void debug_dump_sched_out(task *t) {
-	if (strncmp(t->name, "main", 4)
-			&& strncmp(t->name, "sleep5sec", 9)) {
-		return;
-	}
-
-	debug_dump(t, "sched out");
-}
-
-void debug_dump_sched_in(task *t) {
-	if (strncmp(t->name, "main", 4)
-				&& strncmp(t->name, "sleep5sec", 9)) {
-			return;
-		}
-	debug_dump(t, "sched in");
-	if (t->sp - t->stack == 0xFD788) {
-		printf("stack crashed\n");
-	}
-}

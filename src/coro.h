@@ -30,9 +30,6 @@ typedef struct task {
 	nlist_head waitq; // who is waiting for this to finish
 	char name[64];
 	int flags;
-	int reserved[3];  // align
-	unsigned long regs[16];
-	char fpstate[512];
 } task;
 
 typedef struct ctimer {

@@ -3,45 +3,46 @@ CFLAGS = -g -Wall
 AS = as
 LD = ld
 
-.PHONY: all
+srcdir = src
+outdir = build
+$(shell mkdir -p $(outdir))
 
-all: test echoserver chatserver
+cobjs = $(patsubst $(srcdir)/%.c,$(outdir)/%.o,$(wildcard $(srcdir)/*.c)) 
+asobjs = $(patsubst $(srcdir)/%.S,$(outdir)/%.o,$(wildcard $(srcdir)/*.S))
+objs = $(cobjs) $(asobjs)
 
-coro.o: src/coro.c src/coro.h
-	$(CC) -c $(CFLAGS) -o $@ $<
-	
-colib.o: src/colib.c src/coro.h
-	$(CC) -c $(CFLAGS) -o $@ $<
+exampleobjs = $(outdir)/chatserver.o $(outdir)/echoserver.o
+testobjs = $(outdir)/test.o
 
-list.o: src/list.c src/list.h
-	$(CC) -c $(CFLAGS) -o $@ $<
+all: $(outdir)/chatserver  $(outdir)/echoserver $(outdir)/test
 
-	
-sched.o: src/sched.S
+
+$(cobjs): $(outdir)/%.o: src/%.c
+	 $(CC) -c $(CFLAGS) $< -o $@
+	 
+$(asobjs): $(outdir)/%.o: src/%.S
 	$(AS) -o $@ $<
-atomic.o: src/atomic.S
-	$(AS) -o $@ $<
 	
-test.o: examples/test.c
-	$(CC) -c $(CFLAGS) -o test.o $<
-	
-test: test.o coro.o colib.o list.o sched.o atomic.o
-	$(CC) -o $@ $^ -lc
-	#./$@
-	
-echoserver.o: examples/echoserver.c
-	$(CC) -c $(CFLAGS) -o echoserver.o $<
+$(exampleobjs): $(outdir)/%.o: examples/%.c
+	 $(CC) -c $(CFLAGS) $< -o $@
 
-echoserver: echoserver.o coro.o colib.o list.o sched.o atomic.o
+$(testobjs): $(outdir)/%.o: test/%.c
+	 $(CC) -c $(CFLAGS) $< -o $@
+	 
+$(outdir)/test: $(outdir)/test.o $(objs)
 	$(CC) -o $@ $^ -lc
 
-chatserver.o: examples/chatserver.c
-	$(CC) -c $(CFLAGS) -o chatserver.o $<
-	
-chatserver: chatserver.o coro.o colib.o list.o sched.o atomic.o
+$(outdir)/echoserver: $(outdir)/echoserver.o $(objs)
 	$(CC) -o $@ $^ -lc
 	
-.PHONY: clean
-
+$(outdir)/chatserver: $(outdir)/chatserver.o $(objs)
+	$(CC) -o $@ $^ -lc
+	
+test: $(outdir)/test
+	python test/test.py
+	
 clean:
-	rm -f *.o test echoserver chatserver
+	rm -rf $(outdir)/*
+
+.PHONY: all clean test
+

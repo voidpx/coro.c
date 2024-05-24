@@ -2,6 +2,7 @@
 #include <netinet/in.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "../src/coro.h"
 
