@@ -1,7 +1,9 @@
-.global schedule
+.global __schedule
+.global __schedule_end
 .global _switch_to
 .global coro_start
 .global _task_cleanup
+
 .text
 
 # prepare for calling into c, make sure stack is properly aligned
@@ -28,13 +30,6 @@ __call_c:
 	popq %rax;
 	retq;
 
-__sched_enter:
-	pushq %r11;
-	lea sched_enter(%rip), %r11;
-	call __call_c;
-	popq %r11;
-	retq;
-
 __sched_exit:
 	pushq %r11;
 	lea sched_exit(%rip), %r11;
@@ -43,137 +38,104 @@ __sched_exit:
 	retq;
 
 # main scheduler entry:
-# 1. called from the timer signal handler,in which case the stack is not necessarily aligned properly for calls
-# 2. user code
-schedule:
+# called from the timer signal handler,in which case the stack is not necessarily aligned properly for calls
+__schedule:
 	movl $1, __scheduling(%rip); # first thing in scheduler
-	# save context, must be on stack
-	pushfq;
-	pushq %r8;
-	pushq %r9;
-	pushq %r10;
-	pushq %r11;
-	pushq %r12;
-	pushq %r13;
-	pushq %r14;
-	pushq %r15;
-	pushq %rdi;
-	pushq %rsi;
-	pushq %rbp;
-	pushq %rbx;
-	pushq %rdx;
-	pushq %rax;
-	pushq %rcx;
-
-	# align stack
-	movq %rsp, %rax;
-	testq $0xf, %rax;
-	jz 1f; # good stack
-	andq $0xfffffffffffffff0, %rax;
-	movq %rsp, %rcx;
-	movq %rax, %rsp; # aligned sp
-	pushq %rcx; # unaigned sp
-	pushq $1; # flag indicating stack aligment
-	jmp 2f;
-1:
-	pushq %rsp;
-	pushq $0;
-2:
-
-	subq $0x200, %rsp;
-	fxsave (%rsp);
-
-    movq current(%rip), %rdi;
-    cmpq sched(%rip), %rdi;
-	# sched has fixed pc & sp, don't touch it
-    je 3f;
-
-
-	call __sched_enter;
-
-	movq current(%rip), %rdi;
-	movq %rsp, (%rdi);
-	#only the sp needs to be saved, pc is saved on the stack already
-
-3:
-#===========debug================
-#	movq %rax, %rdi;
-#	lea debug_dump_sched_out(%rip), %r11;
-#	call __call_c;
-#===========debug end================
 
 	# switch to scheduler sp, which is always properly aligned
 	movq sched(%rip), %rax;
 	# simulate call
-	movq (%rax), %rsp;
-    push 8(%rax);
+	movq 8(%rax), %rsp;
+    push (%rax); # sched pc, not really matter, it never comes back
 	jmp _schedule; # never return
 
 
 # _switch_to(task *)
 _switch_to:
-	movq (%rdi), %rsp; # new stack
-	movq %rdi, current(%rip); # set current
 
+	#movq 8(%rdi), %rsp; # new stack
+	movq %rdi, current(%rip); # set current
 	cmpq sched(%rip), %rdi;
-	jz 3f;
+	jnz 1f;
+	movq 8(%rdi), %rsp;
+	jmp 4f; # runtime shutdown
+1:
 
 	movl 0x3c(%rdi), %eax; # state
 	testl %eax, %eax;
-	jnz 1f; # not new
+	jnz 2f; # not new
 
+	movq 8(%rdi), %rsp; # new stack
 	pushq $0; # no return address, stack align
 	lea task_entry(%rip), %rax;
 	pushq %rax;
 
-1:
+2:
 	pushq %rdi;
 	call __sched_exit;
 	popq %rdi; # rdi is current task
 	movl 0x3c(%rdi), %eax; # state
 	testl %eax, %eax;
-	jnz 2f; # not new
+	jnz 3f; # not new
 
 	movl $1, 0x3c(%rdi); # change to RUNNABLE
-	jmp 3f;
-
-2:
-	# restore context
-	fxrstor (%rsp);
-	addq $0x200, %rsp;
-
-	popq %rcx; # flag, don't care
-	popq %rsp;
-
-	popq %rcx;
-	popq %rax;
-	popq %rdx;
-	popq %rbx;
-	popq %rbp;
-	popq %rsi;
-	popq %rdi;
-	popq %r15;
-	popq %r14;
-	popq %r13;
-	popq %r12;
-	popq %r11;
-	popq %r10;
-	popq %r9;
-	popq %r8;
-	popfq;
+	jmp 4f;
 
 3:
 
+	movq 0x98(%rdi), %r8;
+	movq 0xa0(%rdi), %r9;
+	movq 0xa8(%rdi), %r10;
+	movq 0xb0(%rdi), %r11;
+	movq 0xb8(%rdi), %r12;
+	movq 0xc0(%rdi), %r13;
+	movq 0xc8(%rdi), %r14;
+	movq 0xd0(%rdi), %r15;
+	#movq 0xd8(%rdi), %rdi;
+	movq 0xe0(%rdi), %rsi;
+	movq 0xe8(%rdi), %rbp;
+	movq 0xf0(%rdi), %rbx;
+	movq 0xf8(%rdi), %rdx;
+	#movq 0x100(%rdi),%rax;
+	movq 0x108(%rdi),%rcx;
+	#movq 0x118(%rdi),%rip;
+	#movq 0x120(%rdi)  ,%efl;
+	#movq 0x128(%rdi),%cs, %gs, %fs;
+	#movq 0x130(%rdi),err;
+	#movq 0x138(%rdi),trapno;
+	#movq 0x140(%rdi),oldmask;
+	#movq 0x148(%rdi),%cr2;
+
+#	unsigned long r8, r9, r10, r11, r12, r13, r14, r15;
+#	unsigned long rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp, rip, eflags;
+#	unsigned short cs, gs, fs, __pad0;
+#	unsigned long err, trapno, oldmask, cr2;
+#	struct _fpstate *fpstate;
+
+	fxrstor 0x150(%rdi);
+
+	subq $8, %rsp;
+	movq 0x120(%rdi), %rax;
+	movq %rax, (%rsp);
+	popfq;
+
+	movq 0x110(%rdi),%rsp;
+	movq %rdi, current(%rip); # set current
+
+	movq 0x118(%rdi), %rax;
+	movq %rax, __scratch_ip(%rip);
+	movq 0x100(%rdi),%rax;
+
+	# finally restore rdi
+	movq 0xd8(%rdi), %rdi;
+
+	movl $0, __scheduling(%rip); # last thing in scheduler
+	jmp *__scratch_ip(%rip);
+
+4:
 	movl $0, __scheduling(%rip); # last thing in scheduler
 	retq;
-
-
-#===========debug================
-#	pushq %rdi;
-#	lea debug_dump_sched_in(%rip), %r11;
-#	call __call_c;;
-#	popq %rdi;
-#===========debug end================
+__schedule_end:
 
 _task_cleanup:
 	pushq %rbp;
@@ -188,7 +150,6 @@ _task_cleanup:
 	movq %rbp, %rsp;
 	popq %rbp;
 	retq;
-
 
 # coroutne runtime entry
 coro_start:
@@ -208,3 +169,8 @@ Lcoro_exit:
 	call __sched_cleanup;
 	popq %rbp;
 	retq;
+
+.data
+__scratch_ip:
+.quad 0
+

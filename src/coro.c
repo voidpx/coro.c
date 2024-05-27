@@ -40,7 +40,6 @@ static int epollfd;
 
 int __scheduling = 0;
 int __preempt = 0;
-static int __tick_enabled = 0;
 
 void _switch_to(task *t);
 
@@ -98,12 +97,12 @@ void __sched_cleanup() {
 }
 
 void task_entry(task *t) {
-	void *r = ((void *(*)(void *))t->pc)(t->arg);
+	void *r = ((void *(*)(void *))t->ip)(t->arg);
 	t->ret = r;
 	task_exit(t);
 }
 
-static void tick_enable() {
+void tick_enable() {
 	struct itimerspec its;
 	its.it_value.tv_sec = 0;
 	its.it_value.tv_nsec = TICK_INTERVAL;
@@ -114,25 +113,28 @@ static void tick_enable() {
 }
 
 void sched_exit() {
-	__tick_enabled = 1;
 	tick_enable();
 }
 
-void sched_enter() {
-//	__scheduling = 1;
-	if (__tick_enabled) {
-		struct itimerspec its;
-		its.it_value.tv_sec = 0;
-		its.it_value.tv_nsec = 0;
-		its.it_interval.tv_sec = 0;
-		its.it_interval.tv_nsec = 0;
-		if (timer_settime(timerid, 0, &its, NULL) == -1)
-			err_exit("timer_settime");
-	}
+void __schedule();
+void __schedule_end();
+
+void schedule() {
+	struct itimerspec its;
+	its.it_value.tv_sec = 0;
+	its.it_value.tv_nsec = 0;
+	its.it_interval.tv_sec = 0;
+	its.it_interval.tv_nsec = 0;
+	if (timer_settime(timerid, 0, &its, NULL) == -1)
+		err_exit("timer_settime");
+	raise(SIG_SCHED);
 }
 
 static void tick(int sig, siginfo_t *si, void *uc) {
-	if (__scheduling) {
+	_sigcontext *ctx = (_sigcontext *)uc;
+	if ((ctx->uc_mcontext.rip >= (unsigned long)__schedule
+			&& ctx->uc_mcontext.rip < (unsigned long)__schedule_end)
+			|| __scheduling) {
 		return;
 	}
 	// not in scheduler
@@ -142,14 +144,9 @@ static void tick(int sig, siginfo_t *si, void *uc) {
 		tick_enable();
 		return;
 	}
-	__tick_enabled = 0;
-	_sigcontext *ctx = (_sigcontext *)uc;
-	long sp = ctx->uc_mcontext.rsp;
-	sp -= sizeof(void *);
-	*(unsigned long *)sp = ctx->uc_mcontext.rip;
-	ctx->uc_mcontext.rip = (unsigned long)schedule;
-	ctx->uc_mcontext.rsp = sp;
-	current->pc = ctx->uc_mcontext.rip; // no real use for now, could be used for debugging
+	current->ctx.context = *(co_context *)&ctx->uc_mcontext;
+	current->ctx.fpstate = *(co_fpstate *)ctx->uc_mcontext.fpstate;
+	ctx->uc_mcontext.rip = (unsigned long)__schedule;
 
 }
 
@@ -163,7 +160,7 @@ static task *new_task(void *(*f)(void *), void *arg, char *name, size_t stack_si
 		err_exit("unable to allocate stack, out of memory");
 	}
 	t->sp = t->stack + (stack_size); // top of stack
-	t->pc = (unsigned long)f;
+	t->ip = (unsigned long)f;
 	t->arg = arg;
 	t->state = NEW;
 	t->waitq = NLIST_INIT();
@@ -355,7 +352,7 @@ void _coro_start(void *(*main)(void*), void *arg, unsigned long ret_pc, unsigned
 	if (timer_create(CLOCKID, &sev, &timerid) == -1)
 		err_exit("timer_create: error setting up coroutine runtime");
 	setup_epoll();
-	sched->pc = ret_pc;
+	sched->ip = ret_pc;
 	sched->sp = ret_sp;
 	// user main as arg to sched
 	sched->arg = (void*)main;

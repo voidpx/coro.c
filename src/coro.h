@@ -18,9 +18,34 @@ typedef enum state {
 	DEAD
 } state;
 
+// from musl
+typedef struct co_fpstate {
+	unsigned short cwd, swd, ftw, fop;
+	unsigned long long rip, rdp;
+	unsigned mxcsr, mxcr_mask;
+	struct {
+		unsigned short significand[4], exponent, padding[3];
+	} _st[8];
+	struct {
+		unsigned element[4];
+	} _xmm[16];
+	unsigned padding[24];
+} co_fpstate;
+typedef struct co_context {
+	unsigned long r8, r9, r10, r11, r12, r13, r14, r15;
+	unsigned long rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp, rip, eflags;
+	unsigned short cs, gs, fs, __pad0;
+	unsigned long err, trapno, oldmask, cr2;
+} co_context;
+
+typedef struct task_context {
+	co_context context;
+	co_fpstate fpstate;
+} task_context;
+
 typedef struct task {
+	unsigned long ip;
 	unsigned long sp;
-	unsigned long pc;
 	void *arg;
 	void *ret;
 	unsigned long stack;
@@ -30,6 +55,8 @@ typedef struct task {
 	nlist_head waitq; // who is waiting for this to finish
 	char name[64];
 	int flags;
+	int reserved;  // align
+	task_context ctx;
 } task;
 
 typedef struct ctimer {
@@ -127,6 +154,11 @@ extern int __preempt;
 #define co_calloc(count, elesize) \
 	({\
 		   call_no_preempt(calloc, void *, count, elesize);\
+	})
+
+#define co_free(p) \
+	({\
+		   call_no_preempt_void(free, p);\
 	})
 
 #define co_clock_gettime(clock, ts)\
