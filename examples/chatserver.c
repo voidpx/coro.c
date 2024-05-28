@@ -1,5 +1,7 @@
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <netinet/in.h>
+#include <netdb.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,9 +10,14 @@
 
 #include "../src/coro.h"
 
-#define PORT 5555
+#define UNREG 0x7f
 #define HTAB_MAX 1<<10
 #define MAX_USERS 1<<10
+
+typedef struct args {
+	char *host;
+	int port;
+} args;
 
 typedef struct hnod {
 	struct hnod *next;
@@ -108,24 +115,20 @@ static char *dup_str(char *s, int len) {
 	return dup;
 }
 
-static char* copy_user(char *s, char delimiter) {
+static char* copy_user(char *s, int len, char delimiter) {
 	char *t = s;
-	while (*t != delimiter) t++;
+	while (len && *t != delimiter && *t != '\n') t++, len--;
 	int n = t - s;
-	if (n > 30) n = 30;
-	char *user = co_malloc(n + 1);
-	strncpy(user, s, n);
-	user[n] = '\0';
-	return user;
+	return dup_str(s, n);
 }
 
 char *_after(char *s, char c, size_t len) {
-	char *t = s;
-	while (*t++ != c && (t-s) < len);
-	if (t == s + len) {
+	char *t = s + len;
+	while (s < t && *s != c) s++;
+	if (s >= t - 1) {
 		return NULL;
 	}
-	return t;
+	return s+1;
 }
 
 
@@ -182,11 +185,31 @@ char *next_space(char *s, int len) {
 	return s;
 }
 
-void handle_register(char *s, int len, int fd, int unreg) {
-	if (fd >= MAX_USERS) {
-		write_fmt_color(fd, 0, "registration denied, too many users right now\n");
-		return;
+
+static void list_users(int fd) {
+	int first = 1;
+	for (int i = 0; i < MAX_USERS; ++i) {
+		if (conns[i] && conns[i] != (char*)UNREG) {
+			if (first) {
+				first = 0;
+				write_fmt_color(fd, 0, "%s", conns[i]);
+			} else {
+				write_fmt_color(fd, 0, ", %s", conns[i]);
+			}
+		}
 	}
+	write_fmt_color(fd, 0, "\n");
+}
+
+#define broadcast(fd, fmt, ...)\
+	do {\
+		for (int i = 0; i < MAX_USERS; ++i) {\
+			if (conns[i]) {\
+				write_fmt_color(i, fd, fmt, __VA_ARGS__);\
+			}\
+		}} while(0)
+
+void handle_register(char *s, int len, int fd, int unreg) {
 	if (!unreg) {
 		char *e = next_space(s, len);
 		int n = e - s;
@@ -201,22 +224,14 @@ void handle_register(char *s, int len, int fd, int unreg) {
 		} else {
 			htab_put(&user_registry, user, (void*)fd);
 			conns[fd] = user;
-			for (int i = 0; i < MAX_USERS; ++i) {
-				if (conns[i]) {
-					write_fmt_color(i, 0, "user registered: %s\n", user);
-				}
-			}
+			broadcast(0, "user registered: %s\n", user);
 		}
 	} else {
 		char *user = conns[fd];
-		if (user) {
-			for (int i = 0; i < MAX_USERS; ++i) {
-				if (i != fd && conns[i]) {
-					write_fmt_color(i, 0, "%s left\n", user);
-				}
-			}
+		if (user && user != (char*)UNREG) {
+			broadcast(0, "%s unregistered\n", user);
 			htab_remove(&user_registry, user);
-			conns[fd] = NULL;
+			conns[fd] = (char*)UNREG;
 		} else {
 			write_fmt_color(fd, 0, "you are not registered\n");
 		}
@@ -231,6 +246,8 @@ void handle_cmd(char *s, int len, int fd) {
 		handle_register(sp, len - (sp - s), fd, 0);
 	} else if (n == 2 && !strncmp(s, "r!", n)) {
 		handle_register(sp, len - (sp - s), fd, 1);
+	} else if (n == 1 && !strncmp(s, "l", n)) {
+		list_users(fd);
 	}
 }
 
@@ -238,34 +255,42 @@ void handle_msg(char *s, int len, int fd) {
 	if (*s == ':') {// cmd
 		handle_cmd(s+1, len - 1, fd);
 	} else if (*s == '@') { // private message
-		char *to = copy_user(s+1, ':');
-		char *m = _after(s+1, ':', len - 1);
-		if (m) {
+		char *from = conns[fd];
+		if (!from || from == (char *)UNREG) {
+			write_fmt_color(fd, 0, "please register(:r) first to send private messages\n");
+		} else {
+			char *to = copy_user(s+1, len -1, ':');
+			char *m = _after(s+1, ':', len - 1);
 			void *d = htab_get(&user_registry, to);
 			if (!d) {
 				write_fmt_color(fd, 0, "user doesn't exist: %s\n", to);
 			} else {
-				int to = (int)d;
-				char *from = conns[fd];
-				if (from) {
-					write_fmt_color(to, fd, "%s:%s", from,  m);
+				if (m) {
+					int to = (int) d;
+					write_fmt_color(to, fd, "%s:%s", from, m);
+				} else {
+					write_fmt_color(fd, 0, "no message specified\n");
 				}
 			}
 		}
+	} else {
+		broadcast(fd, "%s", s);
 	}
-
 }
+
+#define HEAD "welcome!\n"\
+	"commands:\n"\
+	":r <user> - register\n"\
+	":r! - unregister\n"\
+	":l - list all online users\n"\
+	"@<user>:<message> - send private message to <user>\n"
 
 void *handle_connnect(void *a) {
 	int sfd  = (int)a;
-	write_fmt_color(sfd, 0, "welcome!\ncommands:\n:r <user> - register\n:r! - unregister\n");
+	conns[sfd] = (char *)UNREG; // unregistered
+	write_fmt_color(sfd, 0, HEAD);
 	write_fmt_color(sfd, 0, "currently online: ");
-	for (int i = 0; i < MAX_USERS; ++i) {
-		if (conns[i]) {
-			write_fmt_color(sfd, 0, conns[i]);
-		}
-	}
-	write_fmt_color(sfd, 0, "\n");
+	list_users(sfd);
 #define BUFSZ 1024
 	char buf[BUFSZ];
 	while (1) {
@@ -273,29 +298,45 @@ void *handle_connnect(void *a) {
 		if (n <= 0) {
 			break;
 		}
+		buf[n] = '\0';
 		handle_msg(buf, n, sfd);
 	}
+	close(sfd);
 	return NULL;
 }
 
 void *start_server(void *arg) {
+	args *a = (args*)arg;
+	struct addrinfo ah = {0};
+	ah.ai_family = AF_INET;
+	ah.ai_socktype = SOCK_STREAM;
+	ah.ai_protocol = 0;
+	struct addrinfo *ai;
+	if (getaddrinfo(a->host, NULL, &ah, &ai)) {
+		err_exit("unable to resolve host");
+	}
 	int so = co_socket(PF_INET, SOCK_STREAM, 0);
-	struct sockaddr_in addr;
-	addr.sin_family = AF_INET;
-	addr.sin_addr = (struct in_addr){htonl(INADDR_ANY)};
-	addr.sin_port = htons(PORT);
-	err_guard(bind(so, (struct sockaddr*)&addr, sizeof(addr)), "error bind");
+	struct sockaddr_in addr = *(struct sockaddr_in*)ai->ai_addr;
+	freeaddrinfo(ai);
+	addr.sin_port = htons(a->port);
+	err_guard(bind(so, &addr, sizeof(addr)), "error bind");
 	listen(so, 50);
-	struct sockaddr sa;
-	socklen_t sl;
+	co_printf("chat server started at %#x:%d\n", ntohl(*(int*)&addr.sin_addr), a->port);
+	struct sockaddr_in sa;
+	socklen_t sl = sizeof(sa);
 	int fd;
-	co_printf("chat server started\n=======================\n");
 	init_htab();
 	while (1) {
 		fd = err_guard(co_accept(so, &sa, &sl), "error accept");
-#define N 32
+		if (fd >= MAX_USERS) {
+			write_fmt_color(fd, 0, "connection limit exceeded\n");
+			close(fd);
+			continue;
+		}
+#define N 64
 		char s[N];
-		co_snprintf(s, N, "connection accepted: %d\n", fd);
+		co_snprintf(s, N, "connection: %d, addr: %#x, port: %d\n", fd,
+				ntohl(*(int*)&sa.sin_addr), ntohs(sa.sin_port));
 		co_printf("%s", s);
 		coro(handle_connnect, (void*) fd, s, TF_DETACHED);
 
@@ -303,7 +344,14 @@ void *start_server(void *arg) {
 	return NULL;
 }
 
-int main() {
-	coro_start(start_server, NULL);
+int main(int argc, char **argv) {
+	args a = {"127.0.0.1", 5555};
+	if (argc >= 3) {
+		a.host = argv[1];
+		a.port = atoi(argv[2]);
+	} else if (argc >= 2) {
+		a.port = atoi(argv[1]);
+	}
+	coro_start(start_server, &a);
 }
 

@@ -112,6 +112,16 @@ void tick_enable() {
 		err_exit("timer_settime: error arm sched timer");
 }
 
+void tick_disable() {
+	struct itimerspec its;
+	its.it_value.tv_sec = 0;
+	its.it_value.tv_nsec = 0;
+	its.it_interval.tv_sec = 0;
+	its.it_interval.tv_nsec = 0;
+	if (timer_settime(timerid, 0, &its, NULL) == -1)
+			err_exit("timer_settime");
+}
+
 void sched_exit() {
 	tick_enable();
 }
@@ -120,13 +130,7 @@ void __schedule();
 void __schedule_end();
 
 void schedule() {
-	struct itimerspec its;
-	its.it_value.tv_sec = 0;
-	its.it_value.tv_nsec = 0;
-	its.it_interval.tv_sec = 0;
-	its.it_interval.tv_nsec = 0;
-	if (timer_settime(timerid, 0, &its, NULL) == -1)
-		err_exit("timer_settime");
+	void tick_disable();
 	raise(SIG_SCHED);
 }
 
