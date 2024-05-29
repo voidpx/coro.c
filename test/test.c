@@ -9,7 +9,7 @@ static void *func(void *a) {
 	return a;
 }
 
-static void *sleep_5sec(void *a) {
+static void *sleep_1sec(void *a) {
 	struct timespec ts;
 	co_clock_gettime(CLOCK_REALTIME, &ts);
 	time_t t = (time_t)ts.tv_sec;
@@ -17,7 +17,7 @@ static void *sleep_5sec(void *a) {
 #define LEN 28
 	char buffer[LEN];
 	co_strftime(buffer, LEN, "%Y-%m-%d %H:%M:%S", tp);
-	co_printf("start sleeping for 5 sec: %s.%ld\n", buffer, ts.tv_nsec/1000000);
+	co_printf("start sleeping for 1 sec: %s.%ld\n", buffer, ts.tv_nsec/1000000);
 
 	struct timespec to = {1, 0};
 	co_sleep(&to);
@@ -25,7 +25,7 @@ static void *sleep_5sec(void *a) {
 	t = (time_t)ts.tv_sec;
 	tp = co_localtime(&t);
 	co_strftime(buffer, LEN, "%Y-%m-%d %H:%M:%S", tp);
-	co_printf("end sleeping for 5 sec: %s.%ld\n", buffer, ts.tv_nsec/1000000);
+	co_printf("end sleeping for 1 sec: %s.%ld\n", buffer, ts.tv_nsec/1000000);
 	return NULL;
 }
 
@@ -37,7 +37,7 @@ void *start(void *arg) {
 		co_snprintf(&n, 10, "task%d", i);
 		a[i] = coro(func, i, &n, 0);
 	}
-	task *t = coro(sleep_5sec, NULL, "sleep5sec", 0);
+	task *t = coro(sleep_1sec, NULL, "sleep1sec", 0);
 	for (int i = 0; i < N; ++i) {
 		void *r = wait_for(a[i]);
 		co_printf("%s return:%d\n", a[i]->name, (int)r);
