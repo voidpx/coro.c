@@ -23,12 +23,12 @@ void *start(void *arg) {
 	task *a[N];
 	for (int i = 0; i < N; ++i) {
 		char n[10];
-		snprintf(&n, 10, "task%d", i);
+		co_snprintf(&n, 10, "task%d", i);
 		a[i] = coro(func, i, &n);
 	}
 	for (int i = 0; i < N; ++i) {
 		void *r = wait_for(a[i]);
-		printf("%s return:%d\n", a[i]->name, (int)r);
+		co_printf("%s return:%d\n", a[i]->name, (int)r);
 	}
 }
 
@@ -42,6 +42,5 @@ int main(int argc, char *argv[]) {
 ### Problems
 
  - currently all coroutines are executed in a single thread
- - each coroutine has a fixed-size stack
  - synchronization mechanism missing
  
