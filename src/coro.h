@@ -57,6 +57,7 @@ typedef struct task {
 	int flags;
 	int reserved;  // align
 	task_context ctx;
+	unsigned long stack_last_mapped;
 } task;
 
 typedef struct ctimer {
@@ -100,6 +101,7 @@ void *wait_for(task *t);
 
 #define err_exit(msg)    do { perror(msg); exit(EXIT_FAILURE); \
                                } while (0)
+#define err_out(fmt,...) do{fprintf(stderr, fmt, __VA_ARGS__);}while(0)
 
 #define err_guard(call, msg) ({int __ret = (call);if (__ret == -1) err_exit(msg); __ret;})
 

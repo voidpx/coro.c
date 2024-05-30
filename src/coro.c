@@ -15,11 +15,12 @@
 #include "coro.h"
 #include "list.h"
 
-#define CLOCKID CLOCK_MONOTONIC
-#define SIG_SCHED SIGRTMIN
+#define MAX_STACK (4 << 20)
+#define PAGE_SIZE (1 << 12)
 
+#define SIG_SCHED SIGRTMIN
+#define CLOCKID CLOCK_MONOTONIC
 #define TICK_INTERVAL 1000000
-#define STACK_SIZE 1 << 20 // 1M default stack size
 
 typedef struct _sigcontext {
 	unsigned long	  uc_flags;
@@ -30,25 +31,46 @@ typedef struct _sigcontext {
 	//sigset_t	  uc_sigmask;
 } _sigcontext;
 
-list tasks = INIT_LIST(tasks);
 task *current;
 task *sched;
+int __scheduling = 0;
+int __preempt = 0;
+
+static list tasks = INIT_LIST(tasks);
 static timer_t timerid;
 static nlist_head ctimers;
 static int __timeout = INT_MAX;
 static int epollfd;
 
-int __scheduling = 0;
-int __preempt = 0;
+static stack_t old_sigstack;
 
 void _switch_to(task *t);
 
+extern char _end[];
+
+long atomic_xaddl(long *p, long val);
+int atomic_casl(long *p, long val, long new);
+
 static void *alloc_stack(size_t size) {
-	void *p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+	if (size == 0 || (size & (PAGE_SIZE - 1)) != 0) {
+		err_exit("invalid stack size");
+	}
+	static size_t stack_alloc = 0; // initially 2T away from _end
+	if (!stack_alloc) {
+		atomic_casl(&stack_alloc, 0, ((size_t)_end + 0x20000000000L) & ~(PAGE_SIZE-1));
+	}
+
+	size_t addr = atomic_xaddl(&stack_alloc, -MAX_STACK);
+	// reserve
+	void *pr = mmap((void*)addr, MAX_STACK, PROT_NONE, MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+	if (pr == MAP_FAILED) {
+		err_exit("error alloc_stack");
+	}
+	void *p = mmap((void*)(addr + MAX_STACK) - size, size, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
 	if (p == MAP_FAILED) {
 		err_exit("error alloc_stack");
 	}
-	return p;
+	return pr;
 }
 
 static void free_stack(void *p, size_t size) {
@@ -86,13 +108,15 @@ void task_exit(task *t) {
 // on scheduler stack
 void task_cleanup(task *t) {
 	remove_task(t);
-	free_stack((void *)t->stack, STACK_SIZE); // configurable size?
+	free_stack((void *)t->stack, MAX_STACK); // configurable size?
 	free(t);
 
 }
 
+static void restore_sigstack();
 
 void __sched_cleanup() {
+	restore_sigstack();
 	free(sched);
 }
 
@@ -163,7 +187,8 @@ static task *new_task(void *(*f)(void *), void *arg, char *name, size_t stack_si
 	if (!t->stack) {
 		err_exit("unable to allocate stack, out of memory");
 	}
-	t->sp = t->stack + (stack_size); // top of stack
+	t->sp = t->stack + MAX_STACK; // top of stack
+	t->stack_last_mapped = t->sp - stack_size;
 	t->ip = (unsigned long)f;
 	t->arg = arg;
 	t->state = NEW;
@@ -178,7 +203,7 @@ static task *new_task(void *(*f)(void *), void *arg, char *name, size_t stack_si
 
 task *coro(void *(*f)(void *), void *a, char *name, int flags) {
 	flags &= ~TF_REAPER; // reaper flag can't be changed
-	return new_task(f, a, name, STACK_SIZE, flags);
+	return new_task(f, a, name, PAGE_SIZE, flags);
 }
 
 static inline task *_get_next(task *t) {
@@ -334,17 +359,29 @@ static void setup_epoll() {
 
 }
 
-void _coro_start(void *(*main)(void*), void *arg, unsigned long ret_pc, unsigned long ret_sp) {
+static void setup_sigstack() {
+	size_t size = PAGE_SIZE;
+	void *p = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+	if (!p) {
+		err_exit("error allocating sig stack");
+	}
+	stack_t os;
+	os.ss_sp = p;
+	os.ss_size = size;
+	os.ss_flags = 0;
+	err_guard(sigaltstack(&os, &old_sigstack), "error setup_sigstack");
+}
+
+static void restore_sigstack() {
+	stack_t os;
+	err_guard(sigaltstack(&old_sigstack, &os), "error setup_sigstack");
+	err_guard(munmap(os.ss_sp, os.ss_size), "error restore_sigstack");
+}
+
+static void setup_timer() {
 	struct sigevent sev;
 	struct sigaction sa;
-	sched = (task *)calloc(1, sizeof(task));
-	if (!sched) {
-		err_exit("unable to allocate scheduler, out of memory");
-	}
-	strncpy(sched->name, "sched", 5);
-	sched->state = RUNNABLE;
-	current = sched;
-	sa.sa_flags = SA_SIGINFO;
+	sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
 	sa.sa_sigaction = tick;
 	sigemptyset(&sa.sa_mask);
 	if (sigaction(SIG_SCHED, &sa, NULL) == -1)
@@ -355,11 +392,50 @@ void _coro_start(void *(*main)(void*), void *arg, unsigned long ret_pc, unsigned
 	sev.sigev_value.sival_ptr = &timerid;
 	if (timer_create(CLOCKID, &sev, &timerid) == -1)
 		err_exit("timer_create: error setting up coroutine runtime");
-	setup_epoll();
+}
+
+static void stack_mem_handler(int sig, siginfo_t *si, void *uc) {
+	unsigned long addr = (unsigned long)si->si_addr;
+	if (addr < current->stack + PAGE_SIZE) {
+		err_exit("stack overflow");
+	}
+	if (addr >= current->stack_last_mapped) {
+		err_exit("runtime corrupted");
+	}
+	addr &= ~(PAGE_SIZE - 1);
+	void *p = mmap(addr, current->stack_last_mapped - addr, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+	if (p == MAP_FAILED) {
+		err_exit("error alloc_stack");
+	}
+}
+
+static void setup_mem() {
+	struct sigaction sa;
+	sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+	sa.sa_sigaction = stack_mem_handler;
+	sigemptyset(&sa.sa_mask);
+	if (sigaction(SIGSEGV, &sa, NULL) == -1)
+		err_exit("sigaction: error setting up memory handler");
+
+}
+
+void _coro_start(void *(*main)(void*), void *arg, unsigned long ret_pc, unsigned long ret_sp) {
+	setup_sigstack();
+	setup_mem();
+	sched = (task *)calloc(1, sizeof(task));
+	if (!sched) {
+		err_exit("unable to allocate scheduler, out of memory");
+	}
+	strncpy(sched->name, "sched", 5);
+	sched->state = RUNNABLE;
 	sched->ip = ret_pc;
 	sched->sp = ret_sp;
 	// user main as arg to sched
 	sched->arg = (void*)main;
+	current = sched;
+
+	setup_timer();
+	setup_epoll();
 	// return value of main is stored in sched, in stead of the main task
 	task *m = coro(main_wrapper, arg, "main", 0);
 	m->flags |= TF_REAPER;

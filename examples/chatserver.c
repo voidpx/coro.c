@@ -248,6 +248,8 @@ void handle_cmd(char *s, int len, int fd) {
 		handle_register(sp, len - (sp - s), fd, 1);
 	} else if (n == 1 && !strncmp(s, "l", n)) {
 		list_users(fd);
+	} else {
+		write_fmt_color(fd, 0, "unknown command\n");
 	}
 }
 
