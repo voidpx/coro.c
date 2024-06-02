@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -g -Wall
+CFLAGS = -g -Wall -fPIC
 AS = as
 LD = ld
 
@@ -16,6 +16,11 @@ testobjs = $(outdir)/test.o
 
 all: $(outdir)/chatserver  $(outdir)/echoserver $(outdir)/test
 
+$(outdir)/cort.o: $(objs)
+	$(LD) -r -o $@ $^
+
+$(outdir)/libcoro.so: $(outdir)/cort.o
+	$(LD) -shared --version-script=coro.ld -o $@ $^ -lc
 
 $(cobjs): $(outdir)/%.o: src/%.c
 	 $(CC) -c $(CFLAGS) $< -o $@
@@ -33,10 +38,10 @@ $(outdir)/test: $(outdir)/test.o $(objs)
 	$(CC) -o $@ $^ -lc
 
 $(outdir)/echoserver: $(outdir)/echoserver.o $(objs)
-	$(CC) -o $@ $^ -lc
+	$(CC) -o $@ $^ 
 	
-$(outdir)/chatserver: $(outdir)/chatserver.o $(objs)
-	$(CC) -o $@ $^ -lc
+$(outdir)/chatserver: $(outdir)/chatserver.o  $(outdir)/libcoro.so
+	$(CC) -o $@ $^ -lcoro  -Wl,-rpath,'$$ORIGIN' -L$(outdir)
 	
 test: $(outdir)/test
 	python test/test.py

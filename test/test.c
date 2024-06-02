@@ -1,4 +1,4 @@
-#include "../src/coro.h"
+#include "../src/coapi.h"
 
 static void *func(void *a) {
 	int i = 0;
@@ -40,7 +40,7 @@ void *start(void *arg) {
 	task *t = coro(sleep_1sec, NULL, "sleep1sec", 0);
 	for (int i = 0; i < N; ++i) {
 		void *r = wait_for(a[i]);
-		co_printf("%s return:%d\n", a[i]->name, (int)r);
+		co_printf("%s return:%d\n", task_name(a[i]), (int)r);
 	}
 	return wait_for(t);
 }

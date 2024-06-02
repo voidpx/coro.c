@@ -1,10 +1,10 @@
 .global atomic_cas
-.global atomic_add
-.global atomic_xaddl
 .global atomic_casl
+.global atomic_xadd
+.global atomic_xaddl
 .text
 
-# int atomic_cas(int *p, int val, int new)
+# int atomic_casl(long *p, long val, long new)
 atomic_casl:
 	movq %rsi, %rax;
 	lock cmpxchg %rdx, (%rdi);
@@ -15,7 +15,7 @@ atomic_casl:
 	movl $1, %eax;
 2:
 	retq;
-
+# int atomic_cas(int *p, int val, int new)
 atomic_cas:
 	movl %esi, %eax;
 	lock cmpxchg %edx, (%rdi);
@@ -33,7 +33,7 @@ atomic_xadd:
 	lock xadd %eax, (%rdi);
 	retq;
 
-# long atomic_xadd(long *p, long val)
+# long atomic_xaddl(long *p, long val)
 atomic_xaddl:
 	movq %rsi, %rax;
 	lock xadd %rax, (%rdi);

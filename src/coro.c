@@ -44,23 +44,42 @@ static int epollfd;
 
 static stack_t old_sigstack;
 
-void _switch_to(task *t);
+const char const *task_name(task *t) {
+	return t->name;
+}
 
-extern char _end[];
+void preempt_disable() {
+	__preempt |= UNSAFE;
+}
+
+void preempt_enable() {
+	__preempt &= ~UNSAFE;
+	if (__preempt & RESCHED) {
+		__preempt &= ~RESCHED;
+		schedule();
+	}
+}
+#define preempt_disabled() (__preempt & UNSAFE)
+#define async_preempt() __preempt |= RESCHED
+
+void _switch_to(task *t);
 
 long atomic_xaddl(long *p, long val);
 int atomic_casl(long *p, long val, long new);
 
 static void *alloc_stack(size_t size) {
+	preempt_disable();
 	if (size == 0 || (size & (PAGE_SIZE - 1)) != 0) {
 		err_exit("invalid stack size");
 	}
-	static size_t stack_alloc = 0; // initially 2T away from _end
-	if (!stack_alloc) {
-		atomic_casl(&stack_alloc, 0, ((size_t)_end + 0x20000000000L) & ~(PAGE_SIZE-1));
+	size_t addr;
+	static size_t stack_alloc = 0;
+#define INITIAL_STACK 0x600000000000L
+	if (atomic_casl(&stack_alloc, 0, INITIAL_STACK + MAX_STACK)) {
+		addr = INITIAL_STACK;
+	} else {
+		addr = atomic_xaddl(&stack_alloc, MAX_STACK);
 	}
-
-	size_t addr = atomic_xaddl(&stack_alloc, -MAX_STACK);
 	// reserve
 	void *pr = mmap((void*)addr, MAX_STACK, PROT_NONE, MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
 	if (pr == MAP_FAILED) {
@@ -70,6 +89,7 @@ static void *alloc_stack(size_t size) {
 	if (p == MAP_FAILED) {
 		err_exit("error alloc_stack");
 	}
+	preempt_enable();
 	return pr;
 }
 
@@ -407,6 +427,7 @@ static void stack_mem_handler(int sig, siginfo_t *si, void *uc) {
 	if (p == MAP_FAILED) {
 		err_exit("error alloc_stack");
 	}
+	current->stack_last_mapped = addr;
 }
 
 static void setup_mem() {
@@ -414,6 +435,7 @@ static void setup_mem() {
 	sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
 	sa.sa_sigaction = stack_mem_handler;
 	sigemptyset(&sa.sa_mask);
+	sigaddset(&sa.sa_mask, SIG_SCHED);
 	if (sigaction(SIGSEGV, &sa, NULL) == -1)
 		err_exit("sigaction: error setting up memory handler");
 

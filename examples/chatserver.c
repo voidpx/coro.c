@@ -8,7 +8,7 @@
 #include <stdarg.h>
 #include <ctype.h>
 
-#include "../src/coro.h"
+#include "../src/coapi.h"
 
 #define UNREG 0x7f
 #define HTAB_MAX 1<<10
