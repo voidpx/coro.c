@@ -1,10 +1,16 @@
 # A toy coroutine runtime for C
 
 This is a toy coroutine runtime(aka, lightweight threads) for C in Linux/x64.
- 
+
+### build
+
+```bash
+$ make clean all
+```
+
 ### example
 
-The folloing code spawns 10000 coroutines that run concurrently.
+The following code spawns 10000 coroutines that run concurrently.
 
 ```c
 #include "coapi.h"
@@ -42,5 +48,5 @@ $ gcc -o test test.c -L. -lcoro -Wl,-rpath=\$ORIGIN
 ### Problems
 
  - currently all coroutines are executed in a single thread
- - synchronization mechanism missing
+ - synchronization mechanism still missing
  
