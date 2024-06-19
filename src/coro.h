@@ -13,6 +13,7 @@
 typedef enum state {
 	NEW,
 	RUNNABLE,
+	RUNNING,
 	BLOCKED,
 	DYING,
 	DEAD
@@ -58,10 +59,32 @@ typedef struct task {
 	int reserved;  // align
 	task_context ctx;
 	unsigned long stack_last_mapped;
+	list runq; // sit on runq
 } task;
 
 #define task task
 #include "coapi.h"
+
+typedef struct runq {
+	pthread_cond_t cond;
+	pthread_mutex_t lock;
+	unsigned int count;
+	list head;
+} runq;
+
+static inline runq_put(runq *q, task *t) {
+	list_push(&q->head, &t->runq);
+	q->count++
+}
+
+static inline task *runq_take(runq *q) {
+	list *l = list_take(&q->head);
+	if (l) {
+		q->count--;
+		return CONTAINER_OF(task, runq, l);
+	}
+	return NULL;
+}
 
 typedef struct ctimer {
 	struct timespec expire;

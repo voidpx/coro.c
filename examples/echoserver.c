@@ -14,9 +14,9 @@ void *handle_connnect(void *a) {
 		if (n <= 0) {
 			break;
 		}
-		err_guard(co_write(sfd, buf, n), "error write");
+	//	err_guard(co_write(sfd, buf, n), "error write");
 		buf[n] = '\0';
-		co_printf("connection %d recv: %s", sfd, buf);
+		co_printf("=============connection %d recv=================\n%s\n============end==========\n", sfd, buf);
 
 	}
 	return NULL;
@@ -32,7 +32,7 @@ void *background_tick(void *a) {
 }
 
 void *start_server(void *arg) {
-	coro(background_tick, NULL, "background tick", TF_DETACHED);
+//	coro(background_tick, NULL, "background tick", TF_DETACHED);
 	int so = co_socket(PF_INET, SOCK_STREAM, 0);
 	struct sockaddr_in addr;
 	addr.sin_family = AF_INET;
@@ -48,7 +48,7 @@ void *start_server(void *arg) {
 #define N 32
 		char s[N];
 		co_snprintf(s, N, "connection accepted: %d\n", fd);
-		co_printf("%s", s);
+		//co_printf("%s", s);
 		coro(handle_connnect, (void*) fd, s, TF_DETACHED);
 
 	}

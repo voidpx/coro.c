@@ -1,6 +1,7 @@
 CC = gcc
-CFLAGS = -g -Wall -fPIC
+CFLAGS = -g -Wall -Wextra -pedantic -fPIC
 AS = as
+ASFLAGS = -g
 LD = ld
 
 srcdir = src
@@ -20,13 +21,13 @@ $(outdir)/cort.o: $(objs)
 	$(LD) -r -o $@ $^
 
 $(outdir)/libcoro.so: $(outdir)/cort.o
-	$(LD) -shared --version-script=coro.ld -o $@ $^ -lc
+	$(LD) -shared --version-script=coro.ld -o $@ $^
 
 $(cobjs): $(outdir)/%.o: src/%.c
 	 $(CC) -c $(CFLAGS) $< -o $@
 	 
 $(asobjs): $(outdir)/%.o: src/%.S
-	$(AS) -o $@ $<
+	$(AS) $(ASFLAGS) -o $@ $<
 	
 $(exampleobjs): $(outdir)/%.o: examples/%.c
 	 $(CC) -c $(CFLAGS) $< -o $@
@@ -35,7 +36,7 @@ $(testobjs): $(outdir)/%.o: test/%.c
 	 $(CC) -c $(CFLAGS) $< -o $@
 	 
 $(outdir)/test: $(outdir)/test.o $(objs)
-	$(CC) -o $@ $^ -lc
+	$(CC) -o $@ $^ -lc -lpthread
 
 $(outdir)/echoserver: $(outdir)/echoserver.o $(objs)
 	$(CC) -o $@ $^ 

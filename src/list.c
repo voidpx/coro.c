@@ -1,6 +1,9 @@
 #include "list.h"
 
-list *list_tail(list *head) {
+list *list_take(list *head) {
+	if (list_empty(head)) {
+		return NULL;
+	}
 	list *t = head->next;
 	head->next->next->prev = head;
 	head->next = head->next->next;
@@ -20,6 +23,7 @@ void nlist_push(nlist_node *n, nlist_head *head) {
 		head->head = head->tail = n;
 	} else {
 		n->prev = head->tail;
+		n->next = NULL;
 		head->tail->next = n;
 		head->tail = n;
 	}

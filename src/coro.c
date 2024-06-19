@@ -11,11 +11,16 @@
 #include <sys/epoll.h>
 #include <limits.h>
 #include <sys/mman.h>
+#include <pthread.h>
+#include <sys/sysinfo.h>
+#include <sys/syscall.h>
+#include <linux/futex.h>
+#include <assert.h>
 
 #include "coro.h"
 #include "list.h"
 
-#define MAX_STACK (4 << 20)
+#define MAX_STACK (1 << 20)
 #define PAGE_SIZE (1 << 12)
 
 #define SIG_SCHED SIGRTMIN
@@ -31,18 +36,42 @@ typedef struct _sigcontext {
 	//sigset_t	  uc_sigmask;
 } _sigcontext;
 
-task *current;
-task *sched;
-int __scheduling = 0;
-int __preempt = 0;
+typedef struct tstate {
+	int __scheduling;
+	int __preempt;
+	task *cur_task;
+	task *sched_task;
+	runq runq;
+	pthread_t pth;
+	unsigned long tid;
+	int park;
+	int reserved;
+	stack_t old_sigstack;
 
-static list tasks = INIT_LIST(tasks);
+} tstate;
+
+static __thread int toffset;
+
+unsigned int n_tstates = 0;
+tstate *tstates;
+
+//task *current;
+//task *sched;
+//int __scheduling=0;
+//int __preempt = 0;
+
+static pthread_mutex_t tasks_lock;
+static list tasks = INIT_LIST(tasks); // all tasks
+//static list runq = INIT_LIST(runq); // runnable tasks
+//static pthread_mutex_t runq_lock;
+
 static timer_t timerid;
+static pthread_mutex_t ctimes_lock;
 static nlist_head ctimers;
 static int __timeout = INT_MAX;
 static int epollfd;
 
-static stack_t old_sigstack;
+//static stack_t old_sigstack;
 
 const char const *task_name(task *t) {
 	return t->name;
@@ -98,12 +127,16 @@ static void free_stack(void *p, size_t size) {
 }
 
 static inline void remove_task(task *t) {
+	pthread_mutex_lock(&tasks_lock);
 	list_remove(&t->link);
+	pthread_mutex_unlock(&tasks_lock);
 }
 
 static inline void add_new(task *t) {
 	preempt_disable();
+	pthread_mutex_lock(&tasks_lock);
 	list_push(&t->link, &tasks);
+	pthread_mutex_unlock(&tasks_lock);
 	preempt_enable();
 }
 
@@ -195,7 +228,21 @@ static void tick(int sig, siginfo_t *si, void *uc) {
 	current->ctx.context = *(co_context *)&ctx->uc_mcontext;
 	current->ctx.fpstate = *(co_fpstate *)ctx->uc_mcontext.fpstate;
 	ctx->uc_mcontext.rip = (unsigned long)__schedule;
+	ctx->uc_mcontext.rdi = &tstate;
 
+}
+
+static void put_on_runq(task *t) {
+	runq *q = &tstates[1].runq; // 0 is the interrupter
+	for (int i = 2; i < n_tstates; ++i) {
+		if (q->count > tstates[i].runq.count) {
+			q = &tstates[i].runq;
+		}
+	}
+	pthread_mutex_lock(&q->lock);
+	runq_put(q, t);
+	pthread_cond_signal(&q->cond);
+	pthread_mutex_unlock(&q->lock);
 }
 
 static task *new_task(void *(*f)(void *), void *arg, char *name, size_t stack_size, int flags) {
@@ -218,6 +265,7 @@ static task *new_task(void *(*f)(void *), void *arg, char *name, size_t stack_si
 		strncpy(&t->name, name, sizeof(t->name) - 1);
 	}
 	add_new(t);
+	put_on_runq(t);
 	return t;
 }
 
@@ -226,10 +274,9 @@ task *coro(void *(*f)(void *), void *a, char *name, int flags) {
 	return new_task(f, a, name, PAGE_SIZE, flags);
 }
 
-static inline task *_get_next(task *t) {
-	return t == sched || t->link.next == &tasks ? CONTAINER_OF(task, link, tasks.next) : CONTAINER_OF(task, link, t->link.next);
-}
-
+//static inline task *_get_next(task *t) {
+//	return t == sched || t->link.next == &tasks ? CONTAINER_OF(task, link, tasks.next) : CONTAINER_OF(task, link, t->link.next);
+//}
 
 void __sched_timer(struct timespec *to) {
 	ctimer ct;
@@ -241,11 +288,13 @@ void __sched_timer(struct timespec *to) {
 	__n.n = &ct;
 	int to_milli = to->tv_sec * 1000 + to->tv_nsec / 1000000;
 	preempt_disable();
+	pthread_mutex_lock(&ctimes_lock);
 	nlist_push(&__n, &ctimers);
 	if (to_milli < __timeout) {
 		__timeout = to_milli;
 	}
 	current->state = BLOCKED;
+	pthread_mutex_unlock(&ctimes_lock);
 	preempt_enable();
 	schedule();
 }
@@ -301,47 +350,29 @@ static void handle_timers() {
 
 }
 
-static task *_pick_next() {
-	if (list_empty(&tasks)) {
-		goto done; // done, scheduler exit
+static task *pick_next() {
+	tstate *t = tstates[toffset];
+	pthread_mutex_lock(&t->runq.lock);
+	if (t->cur_task->state == RUNNING) { // preempted
+		t->cur_task->state = RUNNABLE; // about to be switched out
+		// put it at the end of the run queue
+		runq_put(&t->runq, t->cur_task);
+	} // otherwise voluntary switch, state was already set
+	task *next = runq_take(&t->runq);
+	if (!next) {
+		next = t->sched;
 	}
-	handle_epoll(0);
-	while (1) {
-		handle_timers();
-		task *t = _get_next(current);
-		task *p = t;
-		while (!runnable(t)) {
-			task *next = _get_next(t);
-			if (is_dead(t) && t != p) {
-				task_cleanup(t); // reap
-			}
-			t = next;
-			if (t == p) {
-				break; // exhausted
-			}
-		}
-		if (runnable(t)) {
-			return t;
-		}
-		if (!is_reaper(t) && is_dead(t)) {
-			task_cleanup(t);
-			continue; // try next
-		} else if (is_reaper(t) && is_dying(t)) {
-			// sched reaps the reaper
-			task_cleanup(t);
-			break;
-		}
-		handle_epoll(__timeout);
-	}
-done:
-	return sched;
+	next->state = RUNNING;
+	pthread_mutex_unlock(&t->runq.lock);
+	return next;
 }
 
 /*
  * on scheduler stack
  */
 void _schedule() {
-	task *t = _pick_next();
+	task *t = pick_next();
+
 	_switch_to(t);
 
 }
@@ -389,17 +420,16 @@ static void setup_sigstack() {
 	os.ss_sp = p;
 	os.ss_size = size;
 	os.ss_flags = 0;
-	err_guard(sigaltstack(&os, &old_sigstack), "error setup_sigstack");
+	err_guard(sigaltstack(&os, &tstates[toffset]), "error setup_sigstack");
 }
 
 static void restore_sigstack() {
 	stack_t os;
-	err_guard(sigaltstack(&old_sigstack, &os), "error setup_sigstack");
+	err_guard(sigaltstack(&old_sigstack, &os), "error restore_sigstack");
 	err_guard(munmap(os.ss_sp, os.ss_size), "error restore_sigstack");
 }
 
-static void setup_timer() {
-	struct sigevent sev;
+static void setup_sched_tick() {
 	struct sigaction sa;
 	sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
 	sa.sa_sigaction = tick;
@@ -407,6 +437,10 @@ static void setup_timer() {
 	if (sigaction(SIG_SCHED, &sa, NULL) == -1)
 		err_exit("sigaction: error setting up coroutine runtime");
 
+}
+
+static void setup_timer() {
+	struct sigevent sev;
 	sev.sigev_notify = SIGEV_SIGNAL;
 	sev.sigev_signo = SIG_SCHED;
 	sev.sigev_value.sival_ptr = &timerid;
@@ -430,7 +464,7 @@ static void stack_mem_handler(int sig, siginfo_t *si, void *uc) {
 	current->stack_last_mapped = addr;
 }
 
-static void setup_mem() {
+static void setup_mem_handler() {
 	struct sigaction sa;
 	sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
 	sa.sa_sigaction = stack_mem_handler;
@@ -441,21 +475,80 @@ static void setup_mem() {
 
 }
 
-void _coro_start(void *(*main)(void*), void *arg, unsigned long ret_pc, unsigned long ret_sp) {
+static tstate *get_tstate() {
+	return &tstates[toffset];
+}
+#define current get_tstate()->cur_task;
+
+static void worker_unpack(int no) {
+	tstate *s = &tstates[no];
+
+}
+
+static void init_sched(int n, unsigned long ip, unsigned long sp) {
+	toffset = n;
 	setup_sigstack();
-	setup_mem();
-	sched = (task *)calloc(1, sizeof(task));
+	setup_mem_handler();
+	task *sched = (task *)calloc(1, sizeof(task));
 	if (!sched) {
 		err_exit("unable to allocate scheduler, out of memory");
 	}
-	strncpy(sched->name, "sched", 5);
+	snprintf(sched->name, sizeof(sched->name), "sched%d", n);
 	sched->state = RUNNABLE;
-	sched->ip = ret_pc;
-	sched->sp = ret_sp;
-	// user main as arg to sched
-	sched->arg = (void*)main;
-	current = sched;
+	sched->ip = ip;
+	sched->sp = sp;
+	tstates[toffset].sched_task = sched;
+	tstates[toffset].cur_task = sched;
+}
 
+static void worker_loop() {
+	while (1) {
+		tstate *s = &tstates[toffset];
+		pthread_mutex_lock(&s->runq.lock);
+		while (!s->runq.count) {
+			pthread_cond_wait(&s->runq.cond, &s->runq.lock, NULL);
+		}
+		pthread_mutex_unlock(&s->runq.lock);
+		// work available
+		schedule();
+	}
+}
+
+static void worker(void *a) {
+	int _t __attribute__((aligned(16))) = 0;
+	init_sched((int)i, worker_loop, &_t);
+	worker_loop();
+}
+
+
+void _coro_start(void *(*main)(void*), void *arg, unsigned long ret_pc, unsigned long ret_sp) {
+	pthread_mutex_init(&tasks_lock);
+	pthread_mutex_init(&ctimers_lock);
+#ifdef MAX_PROC
+	n_tstates = MAX_PROC;
+	assert(n > 0);
+#else
+	n_tstates = get_nprocs();
+#endif
+	tstates = calloc(n_tstates, sizeof(tstate));
+	for (int i = 0; i < n_tstates; ++i) {
+		pthread_cond_init(&tstates[i].runq.cond, NULL);
+	}
+	if (!tstates) {
+		err_exit("OOM");
+	}
+	init_sched(0, ret_pc, ret_sp);
+	// user main as arg to sched
+	tstates[toffset].sched_task->arg = (void*)main;
+	// workers
+	for (int i = 1; i < n_tstates; ++i) {
+		tstate *s = &tstates[i];
+		if (pthread_create(&s->pth, NULL, worker, NULL)){
+			err_exit("error creating worker");
+		}
+	}
+
+	setup_sched_tick();
 	setup_timer();
 	setup_epoll();
 	// return value of main is stored in sched, in stead of the main task

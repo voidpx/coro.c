@@ -56,7 +56,7 @@ static inline void list_remove(list *node) {
 	node->next->prev = node->prev;
 }
 
-list *list_tail(list *head);
+list *list_take(list *head);
 
 void list_push(list *t, list *head);
 
