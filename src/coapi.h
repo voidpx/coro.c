@@ -9,6 +9,8 @@
 #include <time.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <sys/types.h>
+#include <dirent.h>
 
 #ifndef task
 #define task void
@@ -101,12 +103,23 @@ void preempt_enable();
 				   call_no_preempt(strftime, size_t, s, size, fmt, tm);\
 			})
 
+
+#define co_readdir(dir) \
+  ({ \
+	call_no_preempt(readdir, struct dirent *, dir);})
+
+#define co_fread(buf, es, ne, f) \
+  ({ \
+	call_no_preempt(fread, int, buf, es, ne, f);})
+
+
 // lib functions
 void co_sleep(struct timespec *ts);
 int co_socket(int domain, int type, int proto);
 int co_accept(int fd, struct sockaddr * addr, socklen_t * len);
 ssize_t co_read(int fd, void* buf, size_t n);
 ssize_t co_write(int fd, const void *buf, size_t n);
+
 // more to be added...
 
 #endif /* SRC_COAPI_H_ */

@@ -13,7 +13,7 @@ $ make clean all
 The following code spawns 10000 coroutines that run concurrently.
 
 ```c
-#include "coapi.h"
+#include <coapi.h>
 
 static void *func(void *a) {
     int i = 0;
@@ -38,15 +38,32 @@ void *start(void *arg) {
     }
 }
 
+int main() {
+	coro_start(start, NULL);
+}
+
 ```
-compile with((provided that coapi.h and libcoro.so are in cwd)):
+compile with(provided that coapi.h and libcoro.so are in cwd):
+
 ```bash
 $ gcc -o test test.c -L. -lcoro -Wl,-rpath=\$ORIGIN
 
 ```
 
-### Problems
+more examples can be found in the `examples` directory:
 
- - currently all coroutines are executed in a single thread
- - synchronization mechanism still missing
+* webserver: a simple web server that could be used as a web file server, start it with
+
+```bash
+$ webserver -p 8080 -r <path>
+# files under the directory <path> then can be navigated/downloaded from web browser
+```
+
+* chatserver: a simple chat server, `nc` can be used as a client
+* echoserver: a server that simply echoes whatever the client sends to it
+
+### TODO
+
+ - multi-threading
+ - synchronization
  

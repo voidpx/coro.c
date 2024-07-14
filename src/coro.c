@@ -308,7 +308,12 @@ static task *_pick_next() {
 	handle_epoll(0);
 	while (1) {
 		handle_timers();
-		task *t = _get_next(current);
+		task *t;;
+		if (current->state == DEAD) {
+			t = CONTAINER_OF(task, link, tasks.next);
+		} else {
+			t = _get_next(current);
+		}
 		task *p = t;
 		while (!runnable(t)) {
 			task *next = _get_next(t);

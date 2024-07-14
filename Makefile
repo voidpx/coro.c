@@ -11,10 +11,10 @@ cobjs = $(patsubst $(srcdir)/%.c,$(outdir)/%.o,$(wildcard $(srcdir)/*.c))
 asobjs = $(patsubst $(srcdir)/%.S,$(outdir)/%.o,$(wildcard $(srcdir)/*.S))
 objs = $(cobjs) $(asobjs)
 
-exampleobjs = $(outdir)/chatserver.o $(outdir)/echoserver.o
+exampleobjs = $(outdir)/chatserver.o $(outdir)/echoserver.o $(outdir)/webserver.o
 testobjs = $(outdir)/test.o
 
-all: $(outdir)/chatserver  $(outdir)/echoserver $(outdir)/test
+all: $(outdir)/webserver $(outdir)/chatserver  $(outdir)/echoserver $(outdir)/test
 
 $(outdir)/cort.o: $(objs)
 	$(LD) -r -o $@ $^
@@ -42,6 +42,9 @@ $(outdir)/echoserver: $(outdir)/echoserver.o $(objs)
 	
 $(outdir)/chatserver: $(outdir)/chatserver.o  $(outdir)/libcoro.so
 	$(CC) -o $@ $^ -lcoro  -Wl,-rpath,'$$ORIGIN' -L$(outdir)
+	
+$(outdir)/webserver: $(outdir)/webserver.o $(objs)
+	$(CC) -o $@ $^ 
 	
 test: $(outdir)/test
 	python test/test.py

@@ -33,10 +33,13 @@ int co_accept(int fd, struct sockaddr *restrict addr, socklen_t *restrict len) {
 		ev.events = EPOLLIN;
 		__sched_epoll(fd, &ev);
 	}
-	err_guard(n, "error accept");
+	if (n == -1) {
+		return n;
+	}
 	int __flags = fcntl(n, F_GETFL);
-	err_guard(fcntl(n, F_SETFL, __flags | O_NONBLOCK),
-			"error setting non-blocking");
+	if (fcntl(n, F_SETFL, __flags | O_NONBLOCK) == -1) {
+		return -1;
+	}
 	return n;
 }
 
@@ -52,7 +55,6 @@ ssize_t co_read(int sfd, void* buf, size_t size) {
 		ev.events = EPOLLIN;
 		__sched_epoll(sfd, &ev);
 	}
-	err_guard(n, "error read");
 	return n;
 }
 
