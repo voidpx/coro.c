@@ -50,12 +50,44 @@ static void no_content(int fd) {
 	co_write(fd, r, strlen(r));
 }
 
-#define FILE_HEADER HTTP " 200 OK\r\n"\
+#define OK_HEADER HTTP " 200 OK\r\n"
+
+#define CONTENT_LEN "Content-Length: {length}\r\n"
+
+#define FILE_HEADER OK_HEADER\
 	"Content-Type: application/octet-stream\r\n"\
+	"Content-Disposition: attachment; filename=\"{filename}\"\r\n"\
+	CONTENT_LEN
 
+#define TEXT_HEADER(type) "Content-Type: " type ";charset=utf-8\r\n"
 
-#define DIR_HEADER HTTP " 200 OK\r\n"\
-		"Content-Type: text/html;charset=utf-8\r\n"\
+#define TYPE_HEADER(type) "Content-Type: " type "\r\n"\
+
+#define HTML_HEADER OK_HEADER\
+	TEXT_HEADER("text/html")\
+	CONTENT_LEN
+
+#define JS_HEADER OK_HEADER\
+	TEXT_HEADER("text/javascript")\
+	CONTENT_LEN
+
+#define CSS_HEADER OK_HEADER\
+	TEXT_HEADER("text/css")\
+	CONTENT_LEN
+
+#define PNG_HEADER OK_HEADER\
+	TYPE_HEADER("image/png")\
+	CONTENT_LEN
+
+#define JPG_HEADER OK_HEADER\
+	TYPE_HEADER("image/jpeg")\
+	CONTENT_LEN
+
+#define WEBP_HEADER OK_HEADER\
+	TYPE_HEADER("image/webp")\
+	CONTENT_LEN
+
+#define DIR_HEADER HTML_HEADER
 
 #define DIR_START "<html>\r\n"\
 		"<head>\r\n"\
@@ -76,32 +108,152 @@ static char *filename(char *file) {
 	return s;
 }
 
+static int has_suffix(const char *file, const char *ext) {
+	const char *p = strrchr(file, '.');
+	if (p && !strcmp(p + 1, ext)) {
+		return 1;
+	}
+	return 0;
+}
+
+static inline int is_html(const char *file) {
+	return has_suffix(file, "html");
+}
+
+static inline int is_js(const char *file) {
+	return has_suffix(file, "js");
+}
+
+static inline int is_css(const char *file) {
+	return has_suffix(file, "css");
+}
+
+static inline int is_jpg(const char *file) {
+	return has_suffix(file, "jpg") || has_suffix(file, "jpeg");
+}
+
+static inline int is_png(const char *file) {
+	return has_suffix(file, "png");
+}
+
+static inline int is_webp(const char *file) {
+	return has_suffix(file, "webp");
+}
+
+static char *resolve_placeholders(const char *src, char *buf, int bl, const char **p, int n) {
+	char *s = src;
+	int in = 0;
+	char *ph = NULL;
+	int phl = 0;
+	char *start = buf;
+	char *end = buf + bl - 1;
+	while (*s) {
+		char c = *s;
+		switch (c) {
+		case '{':
+			if (in > 0) { // nested placeholder not supported
+				goto out;
+			}
+			in++;
+			ph = ++s;
+			break;
+		case '}':
+			if (--in != 0) {
+				goto out; // mismatch
+			}
+			phl = s - ph;
+			for (int i = 0; i < n; i+=2) {
+				if (!strncmp(ph, p[i], phl)) {
+					int rl = strlen(p[i+1]);
+					if (buf + rl > end) {
+						goto out;
+					}
+					strncpy(buf, p[i+1], rl);
+					buf+=rl;
+					goto replaced;
+				}
+			}
+			if (buf + phl+2 > end) {
+				goto out;
+			}
+			strncpy(buf, ph-1, phl + 2);
+			buf+= phl+2;
+replaced:
+			s++;
+			break;
+		case '\\':
+			char ce = *(s+1);
+			if (ce == '{' || ce == '}') {
+				c=ce;
+				s+=1;
+			}
+			// fall through
+		default:
+			s++;
+			if (in > 0) {
+				break;
+			}
+			if (buf >= end) {
+				goto out;
+			}
+			*buf++=c;
+		}
+	}
+out:
+	*buf='\0';
+	return start;
+}
+
+static char *resolve_placeholder(const char *src, char *buf, int bl, const char *p, const char *r) {
+	char *pp[2] = {p, r};
+	return resolve_placeholders(src, buf, bl, pp, 2);
+}
+
 static void return_file(char *file, size_t size, int fd) {
 	FILE *f = fopen(file, "rb");
 	if (!f) {
 		err_resp(fd);
 		return;
 	}
-	char buf[4096];
-	int n;
-	strcpy(buf, FILE_HEADER);
-	strcat(buf, "Content-Disposition: attachment; filename=\"");
-	strcat(buf, filename(file));
-	strcat(buf, "\"\r\n");
-	strcat(buf, "Content-Length: ");
 	char temp[64];
+	char buf[4096];
+	char *rep[4];
 	snprintf(temp, sizeof(temp), "%d", size);
-	strcat(buf, temp);
-	strcat(buf, "\r\n\r\n"); // end of header
 
+	rep[0] = "filename";
+	rep[1] = filename(file);
+	rep[2] = "length";
+	rep[3] = temp;
+
+	char *header;
+	if (is_html(file)) {
+		header = HTML_HEADER;
+	} else if (is_js(file)) {
+		header = JS_HEADER;
+	} else if (is_css(file)) {
+		header = CSS_HEADER;
+	} else if (is_jpg(file)) {
+		header = JPG_HEADER;
+	} else if (is_png(file)) {
+		header = PNG_HEADER;
+	} else if (is_webp(file)) {
+		header = WEBP_HEADER;
+	} else {
+		header = FILE_HEADER;
+	}
+
+	char *s = resolve_placeholders(header, buf, sizeof(buf), rep, 4);
+
+	strcat(s, "\r\n");
 	co_write(fd, buf, strlen(buf));
 	int count = 0;
+	int n;
 	while ((n = co_fread(buf, 1, sizeof(buf), f)) > 0) {
 		co_write(fd, buf, n);
 		count+= n;
 	}
 #ifdef DEBUG
-	co_printf("file size: %d, download size: %d\n", size, count);
+	co_printf("file size: %d, written size: %d\n", size, count);
 #endif
 
 	fclose(f);
@@ -166,12 +318,12 @@ static void return_dir(char *dir, char *rp, int fd) {
 	strcat(buf, b);
 	len += strlen(b);
 
-	snprintf(temp, sizeof(temp), "%d\r\n", len);
-	strcpy(b, DIR_HEADER);
-	strcat(b, "Content-Length: ");
-	strcat(b, temp);
-	strcat(b, "\r\n");
-	co_write(fd, b, strlen(b));
+	snprintf(temp, sizeof(temp), "%d", len);
+
+	char *header = resolve_placeholder(DIR_HEADER, b, sizeof(b), "length", temp);
+	strcat(header, "\r\n");
+
+	co_write(fd, header, strlen(header));
 
 	co_write(fd, buf, len);
 
@@ -216,7 +368,26 @@ static void handle_request(char *s, int len, int fd) {
 	n = 0;
 	while (*p++ != ' ') n++; // path
 	s[n] = '\0';
+
 	char path[PATH_MAX];
+	if (*s == '/' && !*(s+1)) {
+		strcpy(path, root);
+		strcat(path, "/index.html");
+		struct stat st;
+		if (!stat(path, &st)) {
+			if (S_ISREG(st.st_mode)) {
+				return_file(path, st.st_size, fd);
+				return;
+			}
+		}
+		path[strlen(path) - 1] = '\0';
+		if (!stat(path, &st)) {
+			if (S_ISREG(st.st_mode)) {
+				return_file(path, st.st_size, fd);
+				return;
+			}
+		}
+	}
 	strcpy(path, root);
 	char dec[PATH_MAX];
 	url_decode(s, dec, PATH_MAX);
@@ -301,6 +472,14 @@ void *start_server(void *arg) {
 	return NULL;
 }
 
+#define USAGE \
+	"webserver - a simple web server\n\n"\
+	"options:\n"\
+	"\t-r <directory> optional, root directory which is to be used as the context, default is cwd.\n"\
+	"\t-p <port> optional, port to listen on, default is 8080\n"\
+	"\t-h <host> optional, host to listen on, default is localhost\n"\
+	"\t--help print this message\n"
+
 int main(int argc, char **argv) {
 	args a = {"127.0.0.1", 8080, NULL};
 	// poor man's arg parse
@@ -314,6 +493,9 @@ int main(int argc, char **argv) {
 		} else if (!strcmp(argv[i], "-r") && i < argc - 1) {
 			a.root = argv[i+1];
 			i+=1;
+		} else if (!strcmp(argv[i], "--help")) {
+			printf("%s", USAGE);
+			return 0;
 		}
 	}
 	coro_start(start_server, &a);
